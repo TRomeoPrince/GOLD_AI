@@ -1,23 +1,17 @@
 # GOLD_AI
 
-Python-first XAUUSD multi-strategy scalping research system.
+Python-first XAUUSD multi-strategy scalping research system with nine independent M5 entry models.
 
-Nine independent M5 strategy models are active. Cross-strategy agreement is not required.
+## Fast historical research
+The replay engine now limits each strategy evaluation to a 250-bar research window instead of repeatedly copying the entire history. Current active models require at most 80 explicit lookback bars; the larger window preserves warm-up for ATR and pivots while removing the main long-history slowdown.
 
-## Historical research
+Cash reporting is explicit and configurable. Default research assumptions are a 10,000 USD starting balance and 0.9% of current balance risked per signal. These are simulation assumptions, not the balance of the original R-only baseline.
 
-The historical scanner replays completed M5 candles through every strategy, de-duplicates signals, and resolves each setup against its own SL/TP. Results are measured in R so strategies with different stop sizes can be compared.
-
-It writes:
-- `Reports/backtest_trades.csv` — every historical setup and outcome, including MFE/MAE.
-- `Reports/backtest_summary.csv` — trades, win rate, net/average R, profit factor and max drawdown per strategy.
-
-If SL and TP are both touched inside the same M5 candle, OHLC data cannot reveal which happened first, so the backtester conservatively records the SL first. This avoids optimistic results.
-
-### Run 20,000 M5 bars
-
+Run:
 ```cmd
-cd /d "C:\Users\USER\Desktop\Bots\Forex\AMD1" && git pull origin main && .venv\Scripts\python backtest.py --bars 20000
+cd /d "C:\Users\USER\Desktop\Bots\Forex\AMD1" && git pull origin main && .venv\Scripts\python backtest.py --bars 20000 --balance 10000 --risk 0.9
 ```
 
-Live execution and AI intervention remain disabled during research.
+Reports: backtest_trades.csv, backtest_summary.csv, and backtest_equity.csv. Baseline 001 is preserved in Docs/FIRST_1000_BAR_BASELINE.md.
+
+Combined-strategy cash equity currently processes signals sequentially and does not enforce a maximum simultaneous exposure rule; treat it as research equity, not an executable portfolio result. Live trading and AI intervention remain disabled.
