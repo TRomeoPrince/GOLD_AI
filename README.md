@@ -1,28 +1,24 @@
 # GOLD_AI
 
-Python-first XAUUSD multi-strategy scalping research and execution system.
+Python-first XAUUSD multi-strategy scalping research system.
 
-## Architecture
+Strategies are **independent entry models**. A Market Structure trade does not require Support/Resistance or Range Break agreement, and vice versa.
 
-Strategies are **independent entry models**. A valid setup does not require the other strategies to align. The registry scans every enabled model and records every valid signal separately.
+## Current state
 
-Initial models:
-- Market Structure
-- Support / Resistance
-- Range Break
+- MT5 Python market-data connection: working
+- XAUUSD broker-symbol discovery: working
+- M5 data collection: working
+- Market Structure model: **ACTIVE**
+- Support / Resistance model: rule extraction pending
+- Range Break model: rule extraction pending
+- AI: SHADOW architecture
+- Live execution: disabled during research
 
-M5 is the minimum strategy timeframe. Additional video-derived scalping models will be added as their exact rules are extracted and verified.
-
-## Research policy
-
-We do not assume cross-strategy confluence is required. Each strategy follows its own entry, invalidation, SL and TP rules. Overlapping signals are retained as separate research observations.
-
-AI begins in SHADOW mode: it observes and scores setups but does not block or create trades.
-
-Live trading remains disabled until strategy rules and risk/execution behavior are tested.
+The first active model uses HH/HL and LL/LH structure with M5 pullback/continuation entries. See `Docs/STRATEGY_RULES.md` for the distinction between source-supported concepts and engineering parameters.
 
 ## Run
 
 ```cmd
-cd /d "C:\Users\USER\Desktop\Bots\Forex\AMD1" && git pull origin main && .venv\Scripts\python -m pip install -r requirements.txt && .venv\Scripts\python main.py
+cd /d "C:\Users\USER\Desktop\Bots\Forex\AMD1" && git pull origin main && .venv\Scripts\python main.py
 ```
