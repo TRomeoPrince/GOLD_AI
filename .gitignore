@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+Reports/*.csv
+Reports/*.json
+Reports/*.log
+data/*.db
