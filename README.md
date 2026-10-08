@@ -2,23 +2,22 @@
 
 Python-first XAUUSD multi-strategy scalping research system.
 
-Strategies are **independent entry models**. A Market Structure trade does not require Support/Resistance or Range Break agreement, and vice versa.
+Nine independent M5 strategy models are active. Cross-strategy agreement is not required.
 
-## Current state
+## Historical research
 
-- MT5 Python market-data connection: working
-- XAUUSD broker-symbol discovery: working
-- M5 data collection: working
-- Market Structure model: **ACTIVE**
-- Support / Resistance model: rule extraction pending
-- Range Break model: rule extraction pending
-- AI: SHADOW architecture
-- Live execution: disabled during research
+The historical scanner replays completed M5 candles through every strategy, de-duplicates signals, and resolves each setup against its own SL/TP. Results are measured in R so strategies with different stop sizes can be compared.
 
-The first active model uses HH/HL and LL/LH structure with M5 pullback/continuation entries. See `Docs/STRATEGY_RULES.md` for the distinction between source-supported concepts and engineering parameters.
+It writes:
+- `Reports/backtest_trades.csv` — every historical setup and outcome, including MFE/MAE.
+- `Reports/backtest_summary.csv` — trades, win rate, net/average R, profit factor and max drawdown per strategy.
 
-## Run
+If SL and TP are both touched inside the same M5 candle, OHLC data cannot reveal which happened first, so the backtester conservatively records the SL first. This avoids optimistic results.
+
+### Run 20,000 M5 bars
 
 ```cmd
-cd /d "C:\Users\USER\Desktop\Bots\Forex\AMD1" && git pull origin main && .venv\Scripts\python main.py
+cd /d "C:\Users\USER\Desktop\Bots\Forex\AMD1" && git pull origin main && .venv\Scripts\python backtest.py --bars 20000
 ```
+
+Live execution and AI intervention remain disabled during research.
