@@ -7,22 +7,30 @@ import MetaTrader5 as mt5
 from broker.mt5_client import MT5Client
 from config import M15_BARS, M5_BARS, REPORTS_DIR, SYMBOL_HINT
 from reporting.reporter import Reporter
+from reporting.signal_reporter import SignalReporter
+from strategies import StrategyRegistry
 
 
 def main() -> None:
     reporter = Reporter(REPORTS_DIR)
+    signal_reporter = SignalReporter(REPORTS_DIR)
     client = MT5Client(SYMBOL_HINT)
+    registry = StrategyRegistry()
 
     try:
         status = client.connect()
         account = client.account_snapshot()
-
         m5 = client.candles(mt5.TIMEFRAME_M5, M5_BARS)
         m15 = client.candles(mt5.TIMEFRAME_M15, M15_BARS)
 
         account_path = reporter.save_account_snapshot(account)
         m5_path = reporter.save_candles(m5, "m5")
         m15_path = reporter.save_candles(m15, "m15")
+
+        # Each strategy scans independently. No all-strategy confluence gate.
+        signals = registry.scan(m5)
+        signal_reporter.append(signals)
+
         health_path = reporter.append_health_event(
             {
                 "time_utc": datetime.now(timezone.utc).isoformat(),
@@ -33,23 +41,26 @@ def main() -> None:
                 "terminal_path": status.terminal_path,
                 "m5_rows": len(m5),
                 "m15_rows": len(m15),
+                "strategy_models": "|".join(registry.strategy_ids),
+                "signals": len(signals),
             }
         )
 
-        print("GOLD_AI Phase 1 connection test")
+        print("GOLD_AI Phase 2 - Multi-Strategy Scalping Research Engine")
         print(f"MT5 connected : {status.connected}")
-        print(f"Terminal      : {status.terminal_path}")
         print(f"Account       : {status.account_login} @ {status.account_server}")
         print(f"Symbol        : {client.symbol}")
         print(f"M5 candles    : {len(m5)}")
-        print(f"M15 candles   : {len(m15)}")
+        print(f"Strategies    : {', '.join(registry.strategy_ids)}")
+        print(f"Signals       : {len(signals)}")
         print(f"Reports       : {REPORTS_DIR}")
         print(f"Account file  : {account_path.name}")
         print(f"M5 file       : {m5_path.name}")
         print(f"M15 file      : {m15_path.name}")
         print(f"Health file   : {health_path.name}")
         print("LIVE TRADING  : DISABLED")
-        print("AI MODE       : SHADOW (provider not connected yet)")
+        print("AI MODE       : SHADOW")
+        print("NOTE          : Strategy rule bodies remain disabled until source-video rules are verified.")
 
     except Exception as exc:
         reporter.append_health_event(
