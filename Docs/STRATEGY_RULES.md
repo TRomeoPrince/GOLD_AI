@@ -1,25 +1,23 @@
 # GOLD_AI strategy rulebook
 
-Every strategy is an independent entry model. Cross-strategy agreement is recorded as research data, never required by default.
+All models are independent. A setup is not required to align with other models.
 
-## MARKET_STRUCTURE — ACTIVE
-M5 HH/HL and LL/LH structure with pullback/continuation confirmation.
+## Active models
+1. MARKET_STRUCTURE — HH/HL or LL/LH structural pullback.
+2. SUPPORT_RESISTANCE — repeated horizontal level rejection.
+3. RANGE_BREAK — compact range, body-close breakout and retest.
+4. SMART_MONEY_5M — displacement/BOS, fresh zone, first return.
+5. PULLBACK — trend continuation after a retracement.
+6. LIQUIDITY_SWEEP — run above/below recent liquidity followed by reclaim.
+7. POWER_OF_THREE — accumulation range, manipulation outside it, reversal toward distribution.
+8. PRICE_ACTION — independent bullish/bearish engulfing trigger model.
+9. MOMENTUM_SCALP — strong directional displacement candle model.
 
-## SUPPORT_RESISTANCE — ACTIVE
-Source basis: the supplied price-action material shows repeated horizontal support/resistance, price reactions at those levels, and resistance/support role reversal. The bot clusters repeated M5 swing points into levels and trades a directional rejection from a repeatedly tested level.
+## Source mapping
+The concepts above are separated from the uploaded research library: Market Structure Simplified; 1-Minute Scalping Strategy; 2 Powerful Trading Strategies; 3 Smart Money Strategies; 5-Minute Smart Money Scalping; ICT Liquidity Concepts; Day Trading Using Price Action; Four Smart Money Strategies; Power of Three; and Pullbacks Like a Pro.
 
-Engineering parameters: pivot span, ATR clustering/touch tolerance, stop buffer and 1.5R research target.
+The uploaded material supports the named concepts at strategy level. Numeric ATR thresholds, lookbacks, pivot spans, buffers and research R:R values in code are engineering operationalisations for data collection, not claimed verbatim values from the videos.
 
-## RANGE_BREAK — ACTIVE
-Source basis: supplied price-action material explicitly illustrates Breakout -> Retest and support becoming resistance / resistance becoming support. The model first defines a compact M5 range, requires a body-close breakout, then requires the next completed candle to retest and close back on the breakout side.
+The '7 trading mistakes' material is treated as research/risk guidance, not as an entry model. 'Every Trading Strategy Explained' is taxonomy/reference material; it is not duplicated into many vague entry models. The swing-trading video is not forced into this M5 scalper because this project currently requires M5-or-higher scalping models.
 
-Engineering parameters: 12-bar range, ATR width/body/touch thresholds, stop buffer and 1.5R target.
-
-## SMART_MONEY_5M — ACTIVE
-Source basis: supplied **5-Minute Smart Money Scalping Strategy (Full Breakdown)** material shows supply/demand zones, DBR/RBD/RBR/DBD-style departure structures, break of market structure, candle strength, freshness and first return/reaction at a zone.
-
-The research implementation detects a strong M5 displacement that breaks recent structure, treats the immediately preceding candle as the zone/base, requires that zone to remain fresh, and waits for a first retest with directional confirmation.
-
-Engineering parameters: displacement >= 1 ATR, structural lookback, zone stop buffer and 2R target.
-
-These numeric thresholds are research operationalisations, not claimed verbatim values from the videos. They are deliberately logged so later backtests can tune or reject them.
+AI remains SHADOW-only and live execution remains disabled during research.
