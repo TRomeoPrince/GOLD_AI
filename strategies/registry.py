@@ -4,12 +4,13 @@ from .range_break import RangeBreakStrategy
 from .smart_money_5m import SmartMoney5MStrategy
 from .pullback import PullbackStrategy
 from .momentum_scalp import MomentumScalpStrategy
+from .liquidity_sweep import LiquiditySweepStrategy
 
 class StrategyRegistry:
-    """Active research portfolio.
+    """Active research portfolio using only each strategy's current version.
 
-    Baseline 001 losers are retained in source but excluded from the active
-    registry so they can be re-tested later without losing their implementation.
+    Standalone PRICE_ACTION and POWER_OF_THREE remain preserved in source but
+    inactive. Liquidity Sweep is active only in its Price-Action-confirmed form.
     """
     def __init__(self):
         self.models=[
@@ -19,6 +20,7 @@ class StrategyRegistry:
             SmartMoney5MStrategy(),
             PullbackStrategy(),
             MomentumScalpStrategy(),
+            LiquiditySweepStrategy(),
         ]
 
     def scan(self,candles):
