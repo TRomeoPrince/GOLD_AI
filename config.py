@@ -4,6 +4,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 REPORTS_DIR = PROJECT_ROOT / "Reports"
 DATA_DIR = PROJECT_ROOT / "data"
 
+# Legacy/default single-market hint retained for scanner/backtester compatibility.
+SYMBOL_HINT = "XAUUSD"
+
 # Active demo markets. Broker suffixes/prefixes are resolved automatically.
 ACTIVE_MARKETS = {
     "GOLD": "XAUUSD",
