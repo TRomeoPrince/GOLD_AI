@@ -6,3 +6,7 @@ Reports/*.csv
 Reports/*.json
 Reports/*.log
 data/*.db
+
+# Owner-only licensing secrets
+GOLD_AI_OWNER_PRIVATE_KEY.pem
+license.gold
