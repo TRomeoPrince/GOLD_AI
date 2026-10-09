@@ -22,6 +22,7 @@ from config import (
     SYMBOL_HINT,
 )
 from strategies import StrategyRegistry
+from telegram import TelegramController
 
 
 def _setup_epoch(signal) -> float:
@@ -42,6 +43,59 @@ def _log(path: Path, row: dict) -> None:
         handle.write(json.dumps(row, default=str, separators=(",", ":")) + "\n")
 
 
+def _gold_positions() -> dict[int, object]:
+    positions = mt5.positions_get() or ()
+    return {
+        int(p.ticket): p
+        for p in positions
+        if int(getattr(p, "magic", -1)) == DEMO_MAGIC
+    }
+
+
+def _positions_text(positions: dict[int, object]) -> str:
+    if not positions:
+        return "GOLD_AI POSITIONS\nNo open GOLD_AI positions."
+    lines = ["GOLD_AI POSITIONS"]
+    for p in positions.values():
+        side = "BUY" if int(p.type) == int(mt5.POSITION_TYPE_BUY) else "SELL"
+        lines.append(
+            f"#{p.ticket} {side} {p.volume} {p.symbol} | "
+            f"open {p.price_open} | now {p.price_current} | "
+            f"SL {p.sl} | TP {p.tp} | P/L {p.profit:.2f}"
+        )
+    return "\n".join(lines)
+
+
+def _closed_position_summary(ticket: int, old_position: object) -> str:
+    deals = mt5.history_deals_get(position=ticket) or ()
+    exit_deals = [
+        d for d in deals
+        if int(getattr(d, "entry", -1)) in {
+            int(getattr(mt5, "DEAL_ENTRY_OUT", 1)),
+            int(getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)),
+        }
+    ]
+    side = "BUY" if int(old_position.type) == int(mt5.POSITION_TYPE_BUY) else "SELL"
+    if not exit_deals:
+        return f"📓 CLOSED | #{ticket} {side} {old_position.symbol} | exit details pending"
+    pnl = sum(
+        float(getattr(d, "profit", 0.0))
+        + float(getattr(d, "commission", 0.0))
+        + float(getattr(d, "swap", 0.0))
+        + float(getattr(d, "fee", 0.0))
+        for d in exit_deals
+    )
+    last = exit_deals[-1]
+    reason = {
+        int(getattr(mt5, "DEAL_REASON_SL", 4)): "SL",
+        int(getattr(mt5, "DEAL_REASON_TP", 5)): "TP",
+    }.get(int(getattr(last, "reason", -1)), "EXIT")
+    return (
+        f"📓 {reason} | #{ticket} {side} {old_position.symbol} | "
+        f"exit {getattr(last, 'price', '-')} | net P/L {pnl:.2f}"
+    )
+
+
 def main() -> None:
     load_dotenv()
     client = MT5Client(SYMBOL_HINT)
@@ -49,10 +103,28 @@ def main() -> None:
     executed: set[str] = set()
     orders_log = Path(REPORTS_DIR) / "demo_orders.jsonl"
 
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    tg_admin_raw = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
+    tg_admin = int(tg_admin_raw) if tg_admin_raw.isdigit() else 0
+    telegram = TelegramController(tg_token, tg_admin)
+
     try:
         status = client.connect()
         executor = DemoExecutor(client.symbol, DEMO_RISK_PCT, DEMO_MAGIC)
         account = executor.assert_demo_account()
+        previous_positions = _gold_positions()
+
+        telegram.update_snapshot(
+            status={
+                "account": f"{account['login']} @ {account['server']}",
+                "symbol": client.symbol,
+                "balance": f"{account['balance']:.2f} {account['currency']}",
+                "equity": f"{account['equity']:.2f} {account['currency']}",
+                "positions": len(previous_positions),
+            },
+            positions_text=_positions_text(previous_positions),
+        )
+        telegram.start()
 
         print("GOLD_AI DEMO TRADER")
         print(f"ACCOUNT       : {account['login']} @ {account['server']}")
@@ -66,43 +138,93 @@ def main() -> None:
         print("CONCURRENCY   : NO 2-TRADE CAP (paused for current experiment)")
         print("OPPOSITE SIDE : ALLOWED IF THE MT5 ACCOUNT SUPPORTS HEDGING")
         print(f"POLLING       : every {DEMO_POLL_SECONDS}s")
+        print(f"TELEGRAM      : {'ENABLED' if telegram.configured else 'DISABLED - env vars missing'}")
         print("STATUS        : RUNNING - Ctrl+C to stop")
 
-        while True:
+        if telegram.configured:
+            telegram.notify(
+                "🟢 GOLD_AI STARTED\n"
+                f"Demo: {account['login']} @ {account['server']}\n"
+                f"Symbol: {client.symbol}\nRisk: {DEMO_RISK_PCT}%\n"
+                "AI: SHADOW\nUse /status or /pause."
+            )
+
+        while not telegram.state.stop_requested:
             try:
                 candles = client.candles(mt5.TIMEFRAME_M5, M5_BARS)
                 signals = registry.scan(candles)
                 now = datetime.now(timezone.utc).timestamp()
 
-                for signal in signals:
-                    key = _signal_key(signal)
-                    if key in executed:
-                        continue
+                # /pause blocks new entries only. Existing positions retain
+                # broker-side SL/TP and continue to be monitored/journaled.
+                if not telegram.state.paused:
+                    for signal in signals:
+                        key = _signal_key(signal)
+                        if key in executed:
+                            continue
 
-                    age_minutes = max(0.0, (now - _setup_epoch(signal)) / 60.0)
-                    if age_minutes > DEMO_MAX_SIGNAL_AGE_MINUTES:
-                        # Mark old setup as seen so it is not reconsidered forever.
+                        age_minutes = max(0.0, (now - _setup_epoch(signal)) / 60.0)
+                        if age_minutes > DEMO_MAX_SIGNAL_AGE_MINUTES:
+                            executed.add(key)
+                            continue
+
+                        result = executor.send(signal)
                         executed.add(key)
-                        continue
+                        row = {
+                            "time_utc": datetime.now(timezone.utc).isoformat(),
+                            "signal": asdict(signal),
+                            "result": asdict(result),
+                        }
+                        _log(orders_log, row)
 
-                    result = executor.send(signal)
-                    executed.add(key)
-                    row = {
-                        "time_utc": datetime.now(timezone.utc).isoformat(),
-                        "signal": asdict(signal),
-                        "result": asdict(result),
-                    }
-                    _log(orders_log, row)
+                        label = "SENT" if result.sent else "SKIPPED"
+                        print(
+                            f"[{datetime.now().strftime('%H:%M:%S')}] {label} "
+                            f"{signal.strategy_id} {signal.direction} "
+                            f"vol={result.volume} price={result.price} "
+                            f"SL={result.stop_loss} TP={result.take_profit} "
+                            f"{result.message}"
+                        )
 
-                    label = "SENT" if result.sent else "SKIPPED"
-                    print(
-                        f"[{datetime.now().strftime('%H:%M:%S')}] {label} "
-                        f"{signal.strategy_id} {signal.direction} "
-                        f"vol={result.volume} price={result.price} "
-                        f"SL={result.stop_loss} TP={result.take_profit} "
-                        f"{result.message}"
-                    )
+                        journal = (
+                            f"{label} | {signal.strategy_id} {signal.direction} | "
+                            f"vol {result.volume} | entry {result.price} | "
+                            f"SL {result.stop_loss} | TP {result.take_profit}"
+                        )
+                        telegram.update_snapshot(journal_text=journal)
+                        if result.sent:
+                            telegram.notify(
+                                "🟢 ORDER FILLED\n"
+                                f"{signal.strategy_id} | {signal.direction} {client.symbol}\n"
+                                f"Volume: {result.volume}\nEntry: {result.price}\n"
+                                f"SL: {result.stop_loss}\nTP: {result.take_profit}\n"
+                                f"Ticket: {result.ticket or '-'}"
+                            )
+                        elif telegram.configured:
+                            telegram.notify(
+                                "⚠️ ORDER NOT OPENED\n"
+                                f"{signal.strategy_id} | {signal.direction}\n{result.message}"
+                            )
 
+                current_positions = _gold_positions()
+                for ticket, old_position in previous_positions.items():
+                    if ticket not in current_positions:
+                        summary = _closed_position_summary(ticket, old_position)
+                        telegram.update_snapshot(journal_text=summary)
+                        telegram.notify(summary)
+
+                account_now = mt5.account_info()
+                telegram.update_snapshot(
+                    status={
+                        "account": f"{account_now.login} @ {account_now.server}" if account_now else "-",
+                        "symbol": client.symbol,
+                        "balance": f"{account_now.balance:.2f} {account_now.currency}" if account_now else "-",
+                        "equity": f"{account_now.equity:.2f} {account_now.currency}" if account_now else "-",
+                        "positions": len(current_positions),
+                    },
+                    positions_text=_positions_text(current_positions),
+                )
+                previous_positions = current_positions
                 time.sleep(DEMO_POLL_SECONDS)
 
             except KeyboardInterrupt:
@@ -110,9 +232,16 @@ def main() -> None:
                 break
             except Exception as exc:
                 print(f"[LOOP ERROR] {exc}")
+                telegram.notify(f"⚠️ GOLD_AI LOOP ERROR\n{exc}")
                 time.sleep(max(DEMO_POLL_SECONDS, 5))
 
     finally:
+        if telegram.configured:
+            telegram.notify(
+                "🔴 GOLD_AI STOPPED\n"
+                "The runtime has stopped. This command/process does not close existing MT5 positions."
+            )
+        telegram.stop()
         client.shutdown()
 
 
