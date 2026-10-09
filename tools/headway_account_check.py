@@ -39,6 +39,7 @@ def main() -> None:
         ask = float(tick.ask)
         print("GOLD_AI - HEADWAY ACCOUNT CHECK (READ-ONLY)")
         print("NO TRADES WILL BE PLACED.")
+        print(f"MT5 account login: {account.login}")
         print(f"Broker server    : {account.server}")
         print(f"Account type     : {('DEMO' if int(account.trade_mode) == int(mt5.ACCOUNT_TRADE_MODE_DEMO) else 'REAL/OTHER')}")
         print(f"Account currency : {account.currency}")
