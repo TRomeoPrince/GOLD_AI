@@ -75,7 +75,15 @@ def _positions_text(positions: dict[int, object]) -> str:
     return "\n".join(lines)
 
 
-def _closed_position_summary(ticket: int, old_position: object) -> str:
+def _fmt_price(value: object) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _closed_position_event(ticket: int, old_position: object) -> tuple[str, float, object]:
+
     deals = mt5.history_deals_get(position=ticket) or ()
     exit_deals = [
         d for d in deals
@@ -86,7 +94,7 @@ def _closed_position_summary(ticket: int, old_position: object) -> str:
     ]
     side = "BUY" if int(old_position.type) == int(mt5.POSITION_TYPE_BUY) else "SELL"
     if not exit_deals:
-        return f"📓 CLOSED | #{ticket} {side} {old_position.symbol} | exit details pending"
+        return "CLOSED", 0.0, "-"
     pnl = sum(
         float(getattr(d, "profit", 0.0))
         + float(getattr(d, "commission", 0.0))
@@ -99,10 +107,7 @@ def _closed_position_summary(ticket: int, old_position: object) -> str:
         int(getattr(mt5, "DEAL_REASON_SL", 4)): "SL",
         int(getattr(mt5, "DEAL_REASON_TP", 5)): "TP",
     }.get(int(getattr(last, "reason", -1)), "EXIT")
-    return (
-        f"📓 {reason} | #{ticket} {side} {old_position.symbol} | "
-        f"exit {getattr(last, 'price', '-')} | net P/L {pnl:.2f}"
-    )
+    return reason, pnl, getattr(last, "price", "-")
 
 
 def main() -> None:
@@ -111,6 +116,7 @@ def main() -> None:
     registry = StrategyRegistry()
     executed: set[str] = set()
     orders_log = Path(REPORTS_DIR) / "demo_orders.jsonl"
+    telegram_trade_messages: dict[int, int] = {}
 
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     tg_admin_raw = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
@@ -215,17 +221,18 @@ def main() -> None:
                         if result.sent:
                             side_icon = "🟢" if signal.direction == "BUY" else "🔴"
                             risk_cash = (float(mt5.account_info().equity) * DEMO_RISK_PCT / 100.0) if mt5.account_info() else 0.0
-                            telegram.notify(
+                            message_id = telegram.notify(
                                 "🚀 GOLD_AI — NEW TRADE\n\n"
                                 f"Strategy: {signal.strategy_id}\n"
                                 f"{side_icon} {signal.direction} {client.symbol}\n"
                                 f"Size: {result.volume} lot\n\n"
-                                f"Entry: {result.price}\n"
-                                f"SL:    {result.stop_loss}\n"
-                                f"TP:    {result.take_profit}\n\n"
-                                f"Risk target: {DEMO_RISK_PCT}% (~{risk_cash:.2f})\n"
-                                f"Ticket: #{result.ticket or '-'}"
+                                f"Entry: {_fmt_price(result.price)}\n"
+                                f"SL:    {_fmt_price(result.stop_loss)}\n"
+                                f"TP:    {_fmt_price(result.take_profit)}\n\n"
+                                f"Risk target: {DEMO_RISK_PCT}% (~{risk_cash:.2f})"
                             )
+                            if result.ticket and message_id:
+                                telegram_trade_messages[int(result.ticket)] = int(message_id)
                         elif telegram.configured:
                             telegram.notify(
                                 "⚠️ ORDER NOT OPENED\n"
@@ -235,9 +242,19 @@ def main() -> None:
                 current_positions = _gold_positions()
                 for ticket, old_position in previous_positions.items():
                     if ticket not in current_positions:
-                        summary = _closed_position_summary(ticket, old_position)
+                        reason, pnl, exit_price = _closed_position_event(ticket, old_position)
+                        if reason == "TP":
+                            summary = f"✅ TP HIT • {pnl:+.2f}"
+                        elif reason == "SL":
+                            summary = f"❌ SL HIT • {pnl:+.2f}"
+                        else:
+                            summary = f"🏁 TRADE CLOSED • {pnl:+.2f}"
                         telegram.update_snapshot(journal_text=summary)
-                        telegram.notify(summary)
+                        telegram.notify(
+                            summary,
+                            reply_to_message_id=telegram_trade_messages.get(ticket),
+                        )
+                        telegram_trade_messages.pop(ticket, None)
 
                 account_now = mt5.account_info()
                 telegram.update_snapshot(
