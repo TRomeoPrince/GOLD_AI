@@ -54,15 +54,24 @@ def _gold_positions() -> dict[int, object]:
 
 def _positions_text(positions: dict[int, object]) -> str:
     if not positions:
-        return "GOLD_AI POSITIONS\nNo open GOLD_AI positions."
-    lines = ["GOLD_AI POSITIONS"]
-    for p in positions.values():
-        side = "BUY" if int(p.type) == int(mt5.POSITION_TYPE_BUY) else "SELL"
-        lines.append(
-            f"#{p.ticket} {side} {p.volume} {p.symbol} | "
-            f"open {p.price_open} | now {p.price_current} | "
-            f"SL {p.sl} | TP {p.tp} | P/L {p.profit:.2f}"
-        )
+        return "📊 GOLD_AI — OPEN POSITIONS\n\nNo open GOLD_AI positions."
+    lines = [f"📊 GOLD_AI — OPEN POSITIONS ({len(positions)})"]
+    total = 0.0
+    for index, p in enumerate(positions.values(), 1):
+        side = "🟢 BUY" if int(p.type) == int(mt5.POSITION_TYPE_BUY) else "🔴 SELL"
+        pnl = float(p.profit)
+        total += pnl
+        lines.extend([
+            "",
+            f"{index}. {side} {p.symbol} • {p.volume} lot",
+            f"Entry   {p.price_open}",
+            f"Current {p.price_current}",
+            f"SL      {p.sl}",
+            f"TP      {p.tp}",
+            f"P/L     {pnl:+.2f}",
+            f"Ticket  #{p.ticket}",
+        ])
+    lines.extend(["", f"Floating P/L: {total:+.2f}"])
     return "\n".join(lines)
 
 
@@ -143,11 +152,22 @@ def main() -> None:
 
         if telegram.configured:
             telegram.notify(
-                "🟢 GOLD_AI STARTED\n"
-                f"Demo: {account['login']} @ {account['server']}\n"
-                f"Symbol: {client.symbol}\nRisk: {DEMO_RISK_PCT}%\n"
-                "AI: SHADOW\nUse /status or /pause."
+                "🤖 GOLD_AI — ONLINE\n\n"
+                f"Account: Demo • {account['login']}\n"
+                f"Broker: {account['server']}\n"
+                f"Market: {client.symbol} • M5\n"
+                f"Risk: {DEMO_RISK_PCT}% per trade\n"
+                "AI: SHADOW\n"
+                f"Open GOLD_AI positions: {len(previous_positions)}\n\n"
+                "Commands: /status • /positions • /pause"
             )
+            if previous_positions:
+                telegram.notify(
+                    "🔄 EXISTING POSITIONS DETECTED\n\n"
+                    "These positions were already open when this runtime started. "
+                    "They were not opened by this Telegram session.\n\n"
+                    + _positions_text(previous_positions)
+                )
 
         while not telegram.state.stop_requested:
             try:
@@ -193,12 +213,18 @@ def main() -> None:
                         )
                         telegram.update_snapshot(journal_text=journal)
                         if result.sent:
+                            side_icon = "🟢" if signal.direction == "BUY" else "🔴"
+                            risk_cash = (float(mt5.account_info().equity) * DEMO_RISK_PCT / 100.0) if mt5.account_info() else 0.0
                             telegram.notify(
-                                "🟢 ORDER FILLED\n"
-                                f"{signal.strategy_id} | {signal.direction} {client.symbol}\n"
-                                f"Volume: {result.volume}\nEntry: {result.price}\n"
-                                f"SL: {result.stop_loss}\nTP: {result.take_profit}\n"
-                                f"Ticket: {result.ticket or '-'}"
+                                "🚀 GOLD_AI — NEW TRADE\n\n"
+                                f"Strategy: {signal.strategy_id}\n"
+                                f"{side_icon} {signal.direction} {client.symbol}\n"
+                                f"Size: {result.volume} lot\n\n"
+                                f"Entry: {result.price}\n"
+                                f"SL:    {result.stop_loss}\n"
+                                f"TP:    {result.take_profit}\n\n"
+                                f"Risk target: {DEMO_RISK_PCT}% (~{risk_cash:.2f})\n"
+                                f"Ticket: #{result.ticket or '-'}"
                             )
                         elif telegram.configured:
                             telegram.notify(
