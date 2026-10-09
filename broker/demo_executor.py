@@ -83,7 +83,6 @@ class DemoExecutor:
             return 0.0
         volume = floor(raw_volume / step) * step
         volume = min(max(volume, vmin), vmax)
-        # MT5 volume precision is normally <= 8 decimals.
         return round(volume, 8)
 
     def volume_for_risk(self, direction: str, entry: float, stop_loss: float) -> float:
@@ -106,6 +105,60 @@ class DemoExecutor:
         if signal.direction == "BUY":
             return signal.stop_loss < price < signal.take_profit
         return signal.take_profit < price < signal.stop_loss
+
+    @staticmethod
+    def _fill_name(mode: int) -> str:
+        names = {
+            int(mt5.ORDER_FILLING_FOK): "FOK",
+            int(mt5.ORDER_FILLING_IOC): "IOC",
+            int(mt5.ORDER_FILLING_RETURN): "RETURN",
+        }
+        return names.get(int(mode), str(mode))
+
+    def _select_filling_mode(self, request: dict) -> tuple[Optional[int], Optional[object], str]:
+        """Ask MT5 which market-order filling mode this broker/symbol accepts.
+
+        We do not hard-code IOC because brokers can expose different execution
+        policies for the same instrument. ORDER_FILLING_BOC is intentionally
+        excluded because it is for passive pending/limit-style execution, not
+        these market orders.
+        """
+        info = mt5.symbol_info(self.symbol)
+        advertised = int(getattr(info, "filling_mode", -1)) if info is not None else -1
+
+        # Prefer modes the symbol advertises, then let order_check be the final
+        # authority. RETURN is tried last because it is not valid for every
+        # market-execution symbol.
+        candidates: list[int] = []
+        if advertised & 1:
+            candidates.append(int(mt5.ORDER_FILLING_FOK))
+        if advertised & 2:
+            candidates.append(int(mt5.ORDER_FILLING_IOC))
+        candidates.append(int(mt5.ORDER_FILLING_RETURN))
+
+        # Defensive fallback if the broker's advertised flags are unusual.
+        for mode in (int(mt5.ORDER_FILLING_FOK), int(mt5.ORDER_FILLING_IOC)):
+            if mode not in candidates:
+                candidates.append(mode)
+
+        attempts: list[str] = []
+        for mode in candidates:
+            candidate = dict(request)
+            candidate["type_filling"] = mode
+            check = mt5.order_check(candidate)
+            if check is None:
+                code, message = mt5.last_error()
+                attempts.append(f"{self._fill_name(mode)}=CHECK_FAILED({code}:{message})")
+                continue
+
+            retcode = int(check.retcode)
+            comment = str(getattr(check, "comment", ""))
+            if retcode == 0:
+                return mode, check, f"{self._fill_name(mode)} (symbol filling_mode={advertised})"
+
+            attempts.append(f"{self._fill_name(mode)}={retcode}:{comment}")
+
+        return None, None, "; ".join(attempts)
 
     def send(self, signal: StrategySignal) -> DemoOrderResult:
         self.assert_demo_account()
@@ -139,31 +192,24 @@ class DemoExecutor:
             "magic": self.magic,
             "comment": f"GOLD_AI:{signal.strategy_id}"[:31],
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
         }
 
-        check = mt5.order_check(request)
-        if check is None:
-            code, message = mt5.last_error()
+        fill_mode, check, fill_detail = self._select_filling_mode(request)
+        if fill_mode is None or check is None:
             return DemoOrderResult(
                 False, signal.strategy_id, signal.direction, volume, price,
                 signal.stop_loss, signal.take_profit, None, None,
-                f"ORDER_CHECK_FAILED: {code} | {message}",
-            )
-        if int(check.retcode) != 0:
-            return DemoOrderResult(
-                False, signal.strategy_id, signal.direction, volume, price,
-                signal.stop_loss, signal.take_profit, None, int(check.retcode),
-                f"ORDER_CHECK_REJECTED: {check.comment}",
+                f"ORDER_CHECK_REJECTED: no supported market filling mode. Attempts: {fill_detail}",
             )
 
+        request["type_filling"] = fill_mode
         result = mt5.order_send(request)
         if result is None:
             code, message = mt5.last_error()
             return DemoOrderResult(
                 False, signal.strategy_id, signal.direction, volume, price,
                 signal.stop_loss, signal.take_profit, None, None,
-                f"ORDER_SEND_FAILED: {code} | {message}",
+                f"ORDER_SEND_FAILED [{fill_detail}]: {code} | {message}",
             )
 
         done_codes = {
@@ -175,5 +221,5 @@ class DemoExecutor:
         return DemoOrderResult(
             sent, signal.strategy_id, signal.direction, volume, price,
             signal.stop_loss, signal.take_profit, ticket, int(result.retcode),
-            str(getattr(result, "comment", "")),
+            f"{getattr(result, 'comment', '')} | filling={fill_detail}",
         )
