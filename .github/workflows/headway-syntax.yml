@@ -1,0 +1,21 @@
+name: Headway live safety syntax
+on:
+  push:
+    branches: [main]
+    paths:
+      - "broker/headway_live_executor.py"
+      - "headway_live_bot.py"
+      - "tools/headway_account_check.py"
+      - ".github/workflows/headway-syntax.yml"
+  workflow_dispatch:
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Compile changed Python modules (no MT5 access or trading)
+        run: python -m compileall -q broker/headway_live_executor.py headway_live_bot.py tools/headway_account_check.py
