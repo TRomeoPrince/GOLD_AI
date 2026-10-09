@@ -21,10 +21,12 @@ class DemoOrderResult:
     ticket: Optional[int]
     retcode: Optional[int]
     message: str
+    planned_risk_cash: float = 0.0
+    planned_risk_pct: float = 0.0
 
 
 class DemoExecutor:
-    """MT5 market-order executor with a hard demo-account guard."""
+    """MT5 market-order executor with hard demo-account and risk guards."""
 
     def __init__(self, symbol: str, risk_pct: float, magic: int) -> None:
         self.symbol = symbol
@@ -81,24 +83,46 @@ class DemoExecutor:
             raise RuntimeError(f"Invalid volume step for {self.symbol}.")
         if raw_volume < vmin:
             return 0.0
+
+        # Floor, never round upward. This is important: broker volume
+        # normalization must not increase planned account risk.
         volume = floor(raw_volume / step) * step
         volume = min(max(volume, vmin), vmax)
         return round(volume, 8)
 
-    def volume_for_risk(self, direction: str, entry: float, stop_loss: float) -> float:
+    def _loss_for_volume(self, direction: str, volume: float, entry: float, stop_loss: float) -> float:
+        order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+        loss = mt5.order_calc_profit(order_type, self.symbol, float(volume), entry, stop_loss)
+        if loss is None:
+            code, message = mt5.last_error()
+            raise RuntimeError(f"order_calc_profit failed: {code} | {message}")
+        return abs(float(loss))
+
+    def volume_for_risk(self, direction: str, entry: float, stop_loss: float) -> tuple[float, float, float]:
         account = mt5.account_info()
         if account is None:
             raise RuntimeError("Account info unavailable during risk calculation.")
-        risk_cash = float(account.equity) * (self.risk_pct / 100.0)
-        order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
-        loss_one_lot = mt5.order_calc_profit(order_type, self.symbol, 1.0, entry, stop_loss)
-        if loss_one_lot is None:
-            code, message = mt5.last_error()
-            raise RuntimeError(f"order_calc_profit failed: {code} | {message}")
-        loss_one_lot = abs(float(loss_one_lot))
+
+        equity = float(account.equity)
+        risk_cash = equity * (self.risk_pct / 100.0)
+        loss_one_lot = self._loss_for_volume(direction, 1.0, entry, stop_loss)
         if loss_one_lot <= 0:
             raise RuntimeError("Calculated stop loss for 1 lot is zero.")
-        return self._normalize_volume(risk_cash / loss_one_lot)
+
+        volume = self._normalize_volume(risk_cash / loss_one_lot)
+        if volume <= 0:
+            return 0.0, risk_cash, 0.0
+
+        planned_loss = self._loss_for_volume(direction, volume, entry, stop_loss)
+
+        # Strict enforcement: after broker lot-step normalization, planned loss
+        # may never exceed the configured risk budget. Tiny floating-point
+        # tolerance only; no intentional risk overshoot is permitted.
+        tolerance = max(0.01, risk_cash * 0.0001)
+        if planned_loss > risk_cash + tolerance:
+            return 0.0, risk_cash, planned_loss
+
+        return volume, risk_cash, planned_loss
 
     @staticmethod
     def _valid_geometry(signal: StrategySignal, price: float) -> bool:
@@ -116,19 +140,9 @@ class DemoExecutor:
         return names.get(int(mode), str(mode))
 
     def _select_filling_mode(self, request: dict) -> tuple[Optional[int], Optional[object], str]:
-        """Ask MT5 which market-order filling mode this broker/symbol accepts.
-
-        We do not hard-code IOC because brokers can expose different execution
-        policies for the same instrument. ORDER_FILLING_BOC is intentionally
-        excluded because it is for passive pending/limit-style execution, not
-        these market orders.
-        """
         info = mt5.symbol_info(self.symbol)
         advertised = int(getattr(info, "filling_mode", -1)) if info is not None else -1
 
-        # Prefer modes the symbol advertises, then let order_check be the final
-        # authority. RETURN is tried last because it is not valid for every
-        # market-execution symbol.
         candidates: list[int] = []
         if advertised & 1:
             candidates.append(int(mt5.ORDER_FILLING_FOK))
@@ -136,7 +150,6 @@ class DemoExecutor:
             candidates.append(int(mt5.ORDER_FILLING_IOC))
         candidates.append(int(mt5.ORDER_FILLING_RETURN))
 
-        # Defensive fallback if the broker's advertised flags are unusual.
         for mode in (int(mt5.ORDER_FILLING_FOK), int(mt5.ORDER_FILLING_IOC)):
             if mode not in candidates:
                 candidates.append(mode)
@@ -171,12 +184,25 @@ class DemoExecutor:
                 "SKIPPED_STALE: current price is no longer between the strategy SL and TP.",
             )
 
-        volume = self.volume_for_risk(signal.direction, price, signal.stop_loss)
+        volume, risk_budget, planned_loss = self.volume_for_risk(
+            signal.direction, price, signal.stop_loss
+        )
+        account = mt5.account_info()
+        equity = float(account.equity) if account else 0.0
+        planned_pct = (100.0 * planned_loss / equity) if equity > 0 else 0.0
+
         if volume <= 0:
+            reason = (
+                "SKIPPED_RISK: calculated volume is below broker minimum."
+                if planned_loss <= 0
+                else
+                f"SKIPPED_RISK_GUARD: broker-normalized order would risk "
+                f"{planned_loss:.2f}, above the {risk_budget:.2f} budget."
+            )
             return DemoOrderResult(
                 False, signal.strategy_id, signal.direction, 0.0, price,
-                signal.stop_loss, signal.take_profit, None, None,
-                "SKIPPED_RISK: calculated volume is below broker minimum.",
+                signal.stop_loss, signal.take_profit, None, None, reason,
+                planned_loss, planned_pct,
             )
 
         order_type = mt5.ORDER_TYPE_BUY if signal.direction == "BUY" else mt5.ORDER_TYPE_SELL
@@ -200,6 +226,7 @@ class DemoExecutor:
                 False, signal.strategy_id, signal.direction, volume, price,
                 signal.stop_loss, signal.take_profit, None, None,
                 f"ORDER_CHECK_REJECTED: no supported market filling mode. Attempts: {fill_detail}",
+                planned_loss, planned_pct,
             )
 
         request["type_filling"] = fill_mode
@@ -210,6 +237,7 @@ class DemoExecutor:
                 False, signal.strategy_id, signal.direction, volume, price,
                 signal.stop_loss, signal.take_profit, None, None,
                 f"ORDER_SEND_FAILED [{fill_detail}]: {code} | {message}",
+                planned_loss, planned_pct,
             )
 
         done_codes = {
@@ -222,4 +250,5 @@ class DemoExecutor:
             sent, signal.strategy_id, signal.direction, volume, price,
             signal.stop_loss, signal.take_profit, ticket, int(result.retcode),
             f"{getattr(result, 'comment', '')} | filling={fill_detail}",
+            planned_loss, planned_pct,
         )
