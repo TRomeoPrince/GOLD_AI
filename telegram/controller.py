@@ -47,13 +47,18 @@ class TelegramController:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
 
-    def notify(self, text: str) -> bool:
+    def notify(self, text: str, reply_to_message_id: Optional[int] = None) -> Optional[int]:
         try:
-            self._api("sendMessage", {"chat_id": self.admin_id, "text": text})
-            return True
+            data = {"chat_id": self.admin_id, "text": text}
+            if reply_to_message_id:
+                data["reply_parameters"] = json.dumps({"message_id": int(reply_to_message_id)})
+            result = self._api("sendMessage", data)
+            message = (result or {}).get("result", {})
+            message_id = message.get("message_id")
+            return int(message_id) if message_id is not None else None
         except Exception as exc:
             print(f"[TELEGRAM] notification failed: {exc}")
-            return False
+            return None
 
     def update_snapshot(
         self,
