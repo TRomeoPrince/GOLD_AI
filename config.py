@@ -26,6 +26,10 @@ DEMO_POLL_SECONDS = 5
 DEMO_MAX_SIGNAL_AGE_MINUTES = 10
 DEMO_MAGIC = 560090
 
+# Shared portfolio exposure guard across Gold + US30.
+# At 0.9% per trade this normally allows about two fully-risked positions.
+MAX_TOTAL_OPEN_RISK_PCT = 1.8
+
 # No daily profit/loss cap for the current research phase.
 DAILY_LOSS_CAP_PCT = None
 DAILY_PROFIT_CAP_PCT = None
