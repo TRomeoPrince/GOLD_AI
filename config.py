@@ -8,8 +8,8 @@ DATA_DIR = PROJECT_ROOT / "data"
 SYMBOL_HINT = "XAUUSD"
 
 # Current strategy direction is M15 Sweep & Flip only.
-# Deployment markets are intentionally NOT hard-coded from the old architecture.
-# Set for demo execution with e.g. GOLD_AI_MARKETS=XAUUSD,US30
+# Current explicitly confirmed deployment/research markets:
+# Gold + US30 only. Override with GOLD_AI_MARKETS if needed.
 MARKET_HINTS = {
     "XAUUSD": "XAUUSD",
     "GOLD": "XAUUSD",
@@ -21,7 +21,7 @@ MARKET_HINTS = {
 }
 
 def _active_markets_from_env() -> dict[str, str]:
-    raw = os.getenv("GOLD_AI_MARKETS", "").strip()
+    raw = os.getenv("GOLD_AI_MARKETS", "GOLD,US30").strip()
     if not raw:
         return {}
     out: dict[str, str] = {}
@@ -39,6 +39,8 @@ M15_BARS = 500
 MIN_STRATEGY_TIMEFRAME = "M15"
 
 AI_MODE = "SHADOW"
+AI_PROVIDER = os.getenv("GOLD_AI_AI_PROVIDER", "GROQ").upper()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 LIVE_TRADING = False
 
 # Configurable risk. Current project rule: allowed range 0.1% to 2.0%.
