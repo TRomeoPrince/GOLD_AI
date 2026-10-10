@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from pathlib import Path
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
 
+from ai.shadow import AIShadowEvaluator
 from broker.demo_executor import DemoExecutor
 from broker.m15_trailing import M15StructureTrailingManager
 from broker.mt5_client import MT5Client
@@ -169,6 +171,8 @@ def main() -> None:
     tg_admin_raw = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
     tg_admin = int(tg_admin_raw) if tg_admin_raw.isdigit() else 0
     telegram = TelegramController(tg_token, tg_admin)
+    ai_shadow = AIShadowEvaluator(REPORTS_DIR)
+    ai_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gold-ai-shadow")
 
     clients: dict[str, MT5Client] = {}
 
@@ -271,7 +275,10 @@ def main() -> None:
                 if M15_TRAILING_ENABLED else "OFF"
             )
         )
-        print("AI MODE       : SHADOW / NOT REQUIRED FOR EXECUTION")
+        print(
+            f"AI MODE       : SHADOW / GROQ {ai_shadow.model} / "
+            + ("CONFIGURED" if ai_shadow.api_key else "KEY MISSING")
+        )
         print("CONCURRENCY   : RISK-BASED (no simple trade-count cap)")
         print("OPPOSITE SIDE : ALLOWED IF THE MT5 ACCOUNT SUPPORTS HEDGING")
         print(f"POLLING       : every {DEMO_POLL_SECONDS}s")
@@ -330,6 +337,22 @@ def main() -> None:
                                 "result": asdict(result),
                             }
                             _log(orders_log, row)
+
+                            # AI review is deliberately submitted AFTER the deterministic
+                            # execution decision. It cannot veto, delay, resize or alter
+                            # the trade. One background worker keeps API latency out of
+                            # the execution loop.
+                            recent_context = candles.iloc[-13:-1][
+                                ["time", "open", "high", "low", "close"]
+                            ].to_dict("records")
+                            ai_payload = {
+                                "market": market,
+                                "symbol": client.symbol,
+                                "signal": asdict(signal),
+                                "execution_result": asdict(result),
+                                "recent_m5": recent_context,
+                            }
+                            ai_pool.submit(ai_shadow.evaluate_and_log, ai_payload)
 
                             label = "SENT" if result.sent else "SKIPPED"
                             print(
@@ -436,6 +459,7 @@ def main() -> None:
                 "The runtime has stopped. This command/process does not close existing MT5 positions."
             )
         telegram.stop()
+        ai_pool.shutdown(wait=False, cancel_futures=True)
         MT5Client.shutdown()
 
 
