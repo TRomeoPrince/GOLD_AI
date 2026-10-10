@@ -19,14 +19,16 @@ class StrategyRegistry:
         market_key = (market or "").upper()
 
         if market_key in {"GOLD", "XAUUSD"}:
-            # Long-run refined research leader for Gold.
+            # Current live/research routing: refined S/R + M15 breakout.
             self.models = [
                 SupportResistanceStrategy(min_stop_atr=min_stop_atr),
+                M15BreakoutStrategy(),
             ]
         elif market_key in {"US30", "US30.CASH"}:
-            # Long-run refined research leader for US30.
+            # Current live/research routing: momentum scalp + M15 breakout.
             self.models = [
                 MomentumScalpStrategy(min_stop_atr=min_stop_atr),
+                M15BreakoutStrategy(),
             ]
         else:
             # Historical/default registry retained for research compatibility.
