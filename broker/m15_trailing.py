@@ -19,7 +19,7 @@ class TrailResult:
 
 
 class M15StructureTrailingManager:
-    """Structure-based trailing for M15_BREAKOUT positions only.
+    """Structure-based trailing for M15_SWEEP_FLIP positions only.
 
     Behaviour:
     - never loosens a stop;
@@ -49,7 +49,7 @@ class M15StructureTrailingManager:
     @staticmethod
     def _is_m15_position(position: object) -> bool:
         comment = str(getattr(position, "comment", "") or "")
-        return "M15_BREAKOUT" in comment
+        return "M15_SWEEP_FLIP" in comment
 
     def _candles(self, symbol: str) -> pd.DataFrame:
         rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, self.lookback_bars)
