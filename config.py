@@ -7,7 +7,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 SYMBOL_HINT = "XAUUSD"
 
-# Current strategy direction is M15 Sweep & Flip only.
+# Current routing: Gold refined Support & Resistance; US30 M15 Sweep & Flip.
 # Current explicitly confirmed deployment/research markets:
 # Gold + US30 only. Override with GOLD_AI_MARKETS if needed.
 MARKET_HINTS = {
