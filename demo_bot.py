@@ -11,6 +11,7 @@ import MetaTrader5 as mt5
 from dotenv import load_dotenv
 
 from broker.demo_executor import DemoExecutor
+from broker.m15_trailing import M15StructureTrailingManager
 from broker.mt5_client import MT5Client
 from config import (
     ACTIVE_MARKETS,
@@ -21,6 +22,11 @@ from config import (
     M5_BARS,
     MIN_STOP_ATR,
     MAX_TOTAL_OPEN_RISK_PCT,
+    M15_TRAILING_ENABLED,
+    M15_TRAIL_ACTIVATE_R,
+    M15_TRAIL_SWING_SPAN,
+    M15_TRAIL_ATR_BUFFER,
+    M15_TRAIL_LOOKBACK_BARS,
     REPORTS_DIR,
 )
 from strategies import StrategyRegistry
@@ -180,6 +186,14 @@ def main() -> None:
             for market, client in clients.items()
         }
 
+        trailing = M15StructureTrailingManager(
+            magic=DEMO_MAGIC,
+            activation_r=M15_TRAIL_ACTIVATE_R,
+            swing_span=M15_TRAIL_SWING_SPAN,
+            atr_buffer=M15_TRAIL_ATR_BUFFER,
+            lookback_bars=M15_TRAIL_LOOKBACK_BARS,
+        )
+
         previous_positions = _bot_positions()
         market_text = ", ".join(f"{m}={c.symbol}" for m, c in clients.items())
         strategy_text = "; ".join(
@@ -210,6 +224,14 @@ def main() -> None:
         print(f"STOP FLOOR    : {MIN_STOP_ATR} ATR where refined strategy requires it")
         print("DAILY CAPS    : DISABLED")
         print(f"OPEN RISK CAP : {MAX_TOTAL_OPEN_RISK_PCT}% across all GOLD_AI positions")
+        print(
+            "M15 TRAILING  : "
+            + (
+                f"ON after {M15_TRAIL_ACTIVATE_R}R; M5 swing span={M15_TRAIL_SWING_SPAN}; "
+                f"buffer={M15_TRAIL_ATR_BUFFER} ATR"
+                if M15_TRAILING_ENABLED else "OFF"
+            )
+        )
         print("AI MODE       : SHADOW / NOT REQUIRED FOR EXECUTION")
         print("CONCURRENCY   : RISK-BASED (no simple trade-count cap)")
         print("OPPOSITE SIDE : ALLOWED IF THE MT5 ACCOUNT SUPPORTS HEDGING")
@@ -312,6 +334,22 @@ def main() -> None:
                                     f"{market} • {signal.strategy_id} • {signal.direction}\n"
                                     f"{result.message}"
                                 )
+
+                if M15_TRAILING_ENABLED:
+                    for trail in trailing.update_all():
+                        if trail.changed:
+                            trail_text = (
+                                f"🔒 TRAILING SL UPDATED\n"
+                                f"Ticket #{trail.ticket}\n"
+                                f"SL: {_fmt_price(trail.old_sl)} → {_fmt_price(trail.new_sl)}"
+                            )
+                            print(
+                                f"[{datetime.now().strftime('%H:%M:%S')}] TRAIL "
+                                f"ticket={trail.ticket} SL={trail.old_sl} -> {trail.new_sl}"
+                            )
+                            telegram.update_snapshot(journal_text=trail_text.replace("\n", " | "))
+                            if telegram.configured:
+                                telegram.notify(trail_text)
 
                 current_positions = _bot_positions()
                 for ticket, old_position in previous_positions.items():
