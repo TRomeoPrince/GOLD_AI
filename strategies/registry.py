@@ -4,6 +4,7 @@ from .range_break import RangeBreakStrategy
 from .smart_money_5m import SmartMoney5MStrategy
 from .pullback import PullbackStrategy
 from .momentum_scalp import MomentumScalpStrategy
+from .m15_breakout import M15BreakoutStrategy
 
 
 class StrategyRegistry:
@@ -36,6 +37,7 @@ class StrategyRegistry:
                 SmartMoney5MStrategy(),
                 PullbackStrategy(),
                 MomentumScalpStrategy(),
+                M15BreakoutStrategy(),
             ]
 
     def scan(self, candles):
