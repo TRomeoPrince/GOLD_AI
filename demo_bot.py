@@ -174,15 +174,15 @@ def main() -> None:
 
     try:
         clients, _ = _build_market_stack()
-        primary_symbol = next(iter(clients.values())).symbol
-        guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
-        account = guard.assert_demo_account()
-
         if not clients:
             raise RuntimeError(
                 "No deployment markets configured. Set GOLD_AI_MARKETS explicitly "
                 "(for example XAUUSD,US30) before demo execution."
             )
+
+        primary_symbol = next(iter(clients.values())).symbol
+        guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
+        account = guard.assert_demo_account()
 
         session_values = {
             "asian_start_hour": ASIAN_START_HOUR,
