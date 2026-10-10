@@ -1,9 +1,8 @@
-"""Independent Gemini shadow analysis; never controls order execution."""
+"""Independent Groq shadow analysis; never controls order execution."""
 from __future__ import annotations
 
 import json
 import os
-import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -18,58 +17,107 @@ class AIShadowDecision:
     confidence: float = 0.0
     reason: str = "No evaluation requested."
     model: str = ""
+    provider: str = "GROQ"
     error: str = ""
 
 
 class AIShadowEvaluator:
-    """Research only. Failures never change deterministic strategy signals."""
+    """Research only. AI can never add, remove, modify, or veto trades."""
 
     def __init__(self, reports_dir: Path | str = "Reports"):
         self.path = Path(reports_dir) / "ai_shadow_decisions.jsonl"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        self.api_key = os.getenv("GEMINI_API_KEY", "")
+        self.model = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+        self.api_key = os.getenv("GROQ_API_KEY", "")
+        self.endpoint = "https://api.groq.com/openai/v1/chat/completions"
 
     def evaluate(self, setup: dict) -> AIShadowDecision:
         if not self.api_key:
-            return AIShadowDecision(reason="GEMINI_API_KEY missing; baseline unchanged.", model=self.model)
+            return AIShadowDecision(
+                reason="GROQ_API_KEY missing; deterministic strategy unchanged.",
+                model=self.model,
+            )
+
         prompt = (
-            "You are a trading setup research reviewer. Never place trades. "
-            "Assess only the provided XAUUSD M5 setup and recent OHLC context. "
-            "Do not invent missing market/news facts. Respond with a JSON object: "
-            '{"decision":"ALLOW or REJECT or UNCERTAIN","confidence":0.0,"reason":"short explanation"}. '
-            "Confidence is subjective, not a calibrated probability.\n"
+            "You are a trading setup research reviewer operating in SHADOW mode only. "
+            "Never place, cancel, resize, or modify trades. Assess only the supplied "
+            "deterministic strategy signal and recent OHLC context. Do not invent "
+            "market news, fundamentals, or missing facts. Return JSON only with keys: "
+            "decision (ALLOW|REJECT|UNCERTAIN), confidence (0 to 1), reason (short).\n"
             + json.dumps(setup, default=str, separators=(",", ":"))
         )
+
         body = json.dumps({
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1},
+            "model": self.model,
+            "temperature": 0.1,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a non-executing trading research classifier. "
+                        "Output valid JSON only."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
         }).encode("utf-8")
-        endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" + self.model + ":generateContent"
-        req = urllib.request.Request(endpoint, data=body, headers={
-            "Content-Type": "application/json",
-            "x-goog-api-key": self.api_key,
-        }, method="POST")
+
+        req = urllib.request.Request(
+            self.endpoint,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="POST",
+        )
+
         try:
-            with urllib.request.urlopen(req, timeout=12) as response:
+            with urllib.request.urlopen(req, timeout=8) as response:
                 raw = json.load(response)
-            text = raw["candidates"][0]["content"]["parts"][0]["text"]
+            text = raw["choices"][0]["message"]["content"].strip()
+            if text.startswith("```"):
+                text = text.strip("`")
+                if text.lower().startswith("json"):
+                    text = text[4:].strip()
             obj = json.loads(text)
+
             decision = str(obj.get("decision", "UNCERTAIN")).upper()
             if decision not in ("ALLOW", "REJECT", "UNCERTAIN"):
                 decision = "UNCERTAIN"
-            confidence = max(0.0, min(1.0, float(obj.get("confidence", 0))))
-            result = AIShadowDecision(decision=decision, confidence=confidence,
-                                      reason=str(obj.get("reason", ""))[:500], model=self.model)
+            confidence = max(0.0, min(1.0, float(obj.get("confidence", 0.0))))
+            return AIShadowDecision(
+                decision=decision,
+                confidence=confidence,
+                reason=str(obj.get("reason", ""))[:500],
+                model=self.model,
+            )
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = ""
+            return AIShadowDecision(
+                decision="ERROR",
+                reason="AI request failed; deterministic strategy unchanged.",
+                model=self.model,
+                error=f"HTTP {exc.code}: {detail[:500]}",
+            )
         except Exception as exc:
-            result = AIShadowDecision(decision="ERROR", reason="AI request failed; baseline unchanged.",
-                                      model=self.model, error=str(exc)[:250])
-        return result
+            return AIShadowDecision(
+                decision="ERROR",
+                reason="AI request failed; deterministic strategy unchanged.",
+                model=self.model,
+                error=str(exc)[:500],
+            )
 
     def evaluate_and_log(self, setup: dict) -> AIShadowDecision:
         result = self.evaluate(setup)
-        row = {"time_utc": datetime.now(timezone.utc).isoformat(), "setup": setup,
-               "ai": asdict(result)}
+        row = {
+            "time_utc": datetime.now(timezone.utc).isoformat(),
+            "setup": setup,
+            "ai": asdict(result),
+        }
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, default=str, separators=(",", ":")) + "\n")
         return result
