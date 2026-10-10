@@ -23,15 +23,29 @@ class DemoOrderResult:
     message: str
     planned_risk_cash: float = 0.0
     planned_risk_pct: float = 0.0
+    portfolio_open_risk_cash: float = 0.0
+    portfolio_open_risk_pct: float = 0.0
+    portfolio_post_trade_risk_pct: float = 0.0
 
 
 class DemoExecutor:
     """MT5 market-order executor with hard demo-account and risk guards."""
 
-    def __init__(self, symbol: str, risk_pct: float, magic: int) -> None:
+    def __init__(
+        self,
+        symbol: str,
+        risk_pct: float,
+        magic: int,
+        max_total_open_risk_pct: float | None = None,
+    ) -> None:
         self.symbol = symbol
         self.risk_pct = float(risk_pct)
         self.magic = int(magic)
+        self.max_total_open_risk_pct = (
+            float(max_total_open_risk_pct)
+            if max_total_open_risk_pct is not None
+            else None
+        )
 
     @staticmethod
     def assert_demo_account() -> dict:
@@ -84,21 +98,79 @@ class DemoExecutor:
         if raw_volume < vmin:
             return 0.0
 
-        # Floor, never round upward. This is important: broker volume
-        # normalization must not increase planned account risk.
+        # Floor, never round upward: broker volume normalization must not
+        # intentionally increase planned account risk.
         volume = floor(raw_volume / step) * step
         volume = min(max(volume, vmin), vmax)
         return round(volume, 8)
 
-    def _loss_for_volume(self, direction: str, volume: float, entry: float, stop_loss: float) -> float:
+    def _loss_for_volume(
+        self,
+        direction: str,
+        volume: float,
+        entry: float,
+        stop_loss: float,
+        symbol: str | None = None,
+    ) -> float:
+        symbol = symbol or self.symbol
         order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
-        loss = mt5.order_calc_profit(order_type, self.symbol, float(volume), entry, stop_loss)
-        if loss is None:
+        pnl = mt5.order_calc_profit(order_type, symbol, float(volume), entry, stop_loss)
+        if pnl is None:
             code, message = mt5.last_error()
-            raise RuntimeError(f"order_calc_profit failed: {code} | {message}")
-        return abs(float(loss))
+            raise RuntimeError(f"order_calc_profit failed for {symbol}: {code} | {message}")
+        return abs(min(float(pnl), 0.0))
 
-    def volume_for_risk(self, direction: str, entry: float, stop_loss: float) -> tuple[float, float, float]:
+    def open_portfolio_risk_cash(self) -> float:
+        """Planned loss to current SL for all open GOLD_AI positions.
+
+        Positions with SL at/through breakeven contribute zero risk.
+        This is shared across Gold and US30 because all executors use the
+        same magic number and account.
+        """
+        positions = mt5.positions_get() or ()
+        total = 0.0
+
+        for p in positions:
+            if int(getattr(p, "magic", -1)) != self.magic:
+                continue
+
+            sl = float(getattr(p, "sl", 0.0) or 0.0)
+            if sl <= 0:
+                # A bot position without an SL is not acceptable. Treat it as
+                # exhausting the portfolio budget so no new risk is added.
+                return float("inf")
+
+            direction = (
+                "BUY"
+                if int(p.type) == int(mt5.POSITION_TYPE_BUY)
+                else "SELL"
+            )
+            pnl_to_sl = mt5.order_calc_profit(
+                mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
+                str(p.symbol),
+                float(p.volume),
+                float(p.price_open),
+                sl,
+            )
+            if pnl_to_sl is None:
+                code, message = mt5.last_error()
+                raise RuntimeError(
+                    f"Could not calculate open risk for {p.symbol} #{p.ticket}: "
+                    f"{code} | {message}"
+                )
+
+            # Positive P/L at the SL means the position is already protected
+            # above breakeven, therefore it consumes no loss budget.
+            total += abs(min(float(pnl_to_sl), 0.0))
+
+        return total
+
+    def volume_for_risk(
+        self,
+        direction: str,
+        entry: float,
+        stop_loss: float,
+    ) -> tuple[float, float, float]:
         account = mt5.account_info()
         if account is None:
             raise RuntimeError("Account info unavailable during risk calculation.")
@@ -115,9 +187,6 @@ class DemoExecutor:
 
         planned_loss = self._loss_for_volume(direction, volume, entry, stop_loss)
 
-        # Strict enforcement: after broker lot-step normalization, planned loss
-        # may never exceed the configured risk budget. Tiny floating-point
-        # tolerance only; no intentional risk overshoot is permitted.
         tolerance = max(0.01, risk_cash * 0.0001)
         if planned_loss > risk_cash + tolerance:
             return 0.0, risk_cash, planned_loss
@@ -187,9 +256,23 @@ class DemoExecutor:
         volume, risk_budget, planned_loss = self.volume_for_risk(
             signal.direction, price, signal.stop_loss
         )
+
         account = mt5.account_info()
         equity = float(account.equity) if account else 0.0
         planned_pct = (100.0 * planned_loss / equity) if equity > 0 else 0.0
+
+        open_risk_cash = self.open_portfolio_risk_cash()
+        open_risk_pct = (
+            100.0 * open_risk_cash / equity
+            if equity > 0 and open_risk_cash != float("inf")
+            else float("inf")
+        )
+        post_trade_risk_cash = open_risk_cash + planned_loss
+        post_trade_risk_pct = (
+            100.0 * post_trade_risk_cash / equity
+            if equity > 0 and post_trade_risk_cash != float("inf")
+            else float("inf")
+        )
 
         if volume <= 0:
             reason = (
@@ -202,8 +285,22 @@ class DemoExecutor:
             return DemoOrderResult(
                 False, signal.strategy_id, signal.direction, 0.0, price,
                 signal.stop_loss, signal.take_profit, None, None, reason,
-                planned_loss, planned_pct,
+                planned_loss, planned_pct, open_risk_cash, open_risk_pct,
+                post_trade_risk_pct,
             )
+
+        if self.max_total_open_risk_pct is not None:
+            tolerance_pct = 0.001
+            if post_trade_risk_pct > self.max_total_open_risk_pct + tolerance_pct:
+                return DemoOrderResult(
+                    False, signal.strategy_id, signal.direction, volume, price,
+                    signal.stop_loss, signal.take_profit, None, None,
+                    f"SKIPPED_PORTFOLIO_RISK: open risk {open_risk_pct:.3f}% + "
+                    f"new {planned_pct:.3f}% = {post_trade_risk_pct:.3f}% exceeds "
+                    f"{self.max_total_open_risk_pct:.3f}% cap.",
+                    planned_loss, planned_pct, open_risk_cash, open_risk_pct,
+                    post_trade_risk_pct,
+                )
 
         order_type = mt5.ORDER_TYPE_BUY if signal.direction == "BUY" else mt5.ORDER_TYPE_SELL
         request = {
@@ -226,7 +323,8 @@ class DemoExecutor:
                 False, signal.strategy_id, signal.direction, volume, price,
                 signal.stop_loss, signal.take_profit, None, None,
                 f"ORDER_CHECK_REJECTED: no supported market filling mode. Attempts: {fill_detail}",
-                planned_loss, planned_pct,
+                planned_loss, planned_pct, open_risk_cash, open_risk_pct,
+                post_trade_risk_pct,
             )
 
         request["type_filling"] = fill_mode
@@ -237,7 +335,8 @@ class DemoExecutor:
                 False, signal.strategy_id, signal.direction, volume, price,
                 signal.stop_loss, signal.take_profit, None, None,
                 f"ORDER_SEND_FAILED [{fill_detail}]: {code} | {message}",
-                planned_loss, planned_pct,
+                planned_loss, planned_pct, open_risk_cash, open_risk_pct,
+                post_trade_risk_pct,
             )
 
         done_codes = {
@@ -246,9 +345,11 @@ class DemoExecutor:
         }
         sent = int(result.retcode) in done_codes
         ticket = int(getattr(result, "order", 0) or getattr(result, "deal", 0) or 0) or None
+
         return DemoOrderResult(
             sent, signal.strategy_id, signal.direction, volume, price,
             signal.stop_loss, signal.take_profit, ticket, int(result.retcode),
             f"{getattr(result, 'comment', '')} | filling={fill_detail}",
-            planned_loss, planned_pct,
+            planned_loss, planned_pct, open_risk_cash, open_risk_pct,
+            post_trade_risk_pct,
         )
