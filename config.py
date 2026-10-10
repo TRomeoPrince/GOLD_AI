@@ -36,3 +36,12 @@ DAILY_PROFIT_CAP_PCT = None
 
 # Refined v1 risk geometry.
 MIN_STOP_ATR = 1.5
+
+
+# M15_BREAKOUT structure trailing.
+# Research experiments: this does not enable/disable any strategy by itself.
+M15_TRAILING_ENABLED = True
+M15_TRAIL_ACTIVATE_R = 1.0
+M15_TRAIL_SWING_SPAN = 2
+M15_TRAIL_ATR_BUFFER = 0.15
+M15_TRAIL_LOOKBACK_BARS = 120
