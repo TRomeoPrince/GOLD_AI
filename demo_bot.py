@@ -20,13 +20,19 @@ from config import (
     DEMO_POLL_SECONDS,
     DEMO_RISK_PCT,
     M5_BARS,
-    MIN_STOP_ATR,
     MAX_TOTAL_OPEN_RISK_PCT,
     M15_TRAILING_ENABLED,
     M15_TRAIL_ACTIVATE_R,
     M15_TRAIL_SWING_SPAN,
     M15_TRAIL_ATR_BUFFER,
     M15_TRAIL_LOOKBACK_BARS,
+    ASIAN_START_HOUR,
+    ASIAN_END_HOUR,
+    LONDON_START_HOUR,
+    LONDON_END_HOUR,
+    M15_MIN_REWARD_R,
+    M15_H1_PIVOT_SPAN,
+    M15_STOP_BUFFER_FRACTION,
     REPORTS_DIR,
 )
 from strategies import StrategyRegistry
@@ -172,8 +178,37 @@ def main() -> None:
         guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
         account = guard.assert_demo_account()
 
+        if not clients:
+            raise RuntimeError(
+                "No deployment markets configured. Set GOLD_AI_MARKETS explicitly "
+                "(for example XAUUSD,US30) before demo execution."
+            )
+
+        session_values = {
+            "asian_start_hour": ASIAN_START_HOUR,
+            "asian_end_hour": ASIAN_END_HOUR,
+            "london_start_hour": LONDON_START_HOUR,
+            "london_end_hour": LONDON_END_HOUR,
+        }
+        if any(v is None for v in session_values.values()):
+            raise RuntimeError(
+                "M15 Sweep & Flip session boundaries are not configured. "
+                "Set GOLD_AI_ASIAN_START_HOUR, GOLD_AI_ASIAN_END_HOUR, "
+                "GOLD_AI_LONDON_START_HOUR and GOLD_AI_LONDON_END_HOUR "
+                "in the same timezone used by the MT5 candle timestamps."
+            )
+
         registries = {
-            market: StrategyRegistry(market=market, min_stop_atr=MIN_STOP_ATR)
+            market: StrategyRegistry(
+                market=market,
+                asian_start_hour=ASIAN_START_HOUR,
+                asian_end_hour=ASIAN_END_HOUR,
+                london_start_hour=LONDON_START_HOUR,
+                london_end_hour=LONDON_END_HOUR,
+                h1_pivot_span=M15_H1_PIVOT_SPAN,
+                stop_buffer_fraction=M15_STOP_BUFFER_FRACTION,
+                minimum_reward_r=M15_MIN_REWARD_R,
+            )
             for market in clients
         }
         executors = {
@@ -221,8 +256,12 @@ def main() -> None:
         print("TIMEFRAME     : M5")
         print(f"RISK / TRADE  : STRICT {DEMO_RISK_PCT}% of current equity")
         print(f"STRATEGIES    : {strategy_text}")
-        print(f"STOP FLOOR    : {MIN_STOP_ATR} ATR where refined strategy requires it")
         print("DAILY CAPS    : DISABLED")
+        print(
+            f"SESSIONS      : Asian {ASIAN_START_HOUR:02d}:00-{ASIAN_END_HOUR:02d}:00 | "
+            f"London {LONDON_START_HOUR:02d}:00-{LONDON_END_HOUR:02d}:00 "
+            "(MT5 candle timezone)"
+        )
         print(f"OPEN RISK CAP : {MAX_TOTAL_OPEN_RISK_PCT}% across all GOLD_AI positions")
         print(
             "M15 TRAILING  : "
