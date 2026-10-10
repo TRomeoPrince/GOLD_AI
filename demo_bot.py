@@ -20,6 +20,7 @@ from config import (
     DEMO_RISK_PCT,
     M5_BARS,
     MIN_STOP_ATR,
+    MAX_TOTAL_OPEN_RISK_PCT,
     REPORTS_DIR,
 )
 from strategies import StrategyRegistry
@@ -162,7 +163,7 @@ def main() -> None:
     try:
         clients, _ = _build_market_stack()
         primary_symbol = next(iter(clients.values())).symbol
-        guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC)
+        guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
         account = guard.assert_demo_account()
 
         registries = {
@@ -170,7 +171,12 @@ def main() -> None:
             for market in clients
         }
         executors = {
-            market: DemoExecutor(client.symbol, DEMO_RISK_PCT, DEMO_MAGIC)
+            market: DemoExecutor(
+                client.symbol,
+                DEMO_RISK_PCT,
+                DEMO_MAGIC,
+                MAX_TOTAL_OPEN_RISK_PCT,
+            )
             for market, client in clients.items()
         }
 
@@ -203,8 +209,9 @@ def main() -> None:
         print(f"STRATEGIES    : {strategy_text}")
         print(f"STOP FLOOR    : {MIN_STOP_ATR} ATR where refined strategy requires it")
         print("DAILY CAPS    : DISABLED")
+        print(f"OPEN RISK CAP : {MAX_TOTAL_OPEN_RISK_PCT}% across all GOLD_AI positions")
         print("AI MODE       : SHADOW / NOT REQUIRED FOR EXECUTION")
-        print("CONCURRENCY   : NO TRADE-COUNT CAP")
+        print("CONCURRENCY   : RISK-BASED (no simple trade-count cap)")
         print("OPPOSITE SIDE : ALLOWED IF THE MT5 ACCOUNT SUPPORTS HEDGING")
         print(f"POLLING       : every {DEMO_POLL_SECONDS}s")
         print(f"TELEGRAM      : {'ENABLED' if telegram.configured else 'DISABLED - env vars missing'}")
@@ -219,6 +226,7 @@ def main() -> None:
                 f"Markets: {market_text}\n"
                 f"Risk: STRICT {DEMO_RISK_PCT}% per trade\n"
                 "Daily caps: OFF\n"
+                f"Max total open risk: {MAX_TOTAL_OPEN_RISK_PCT}%\n"
                 f"Strategies: {strategy_text}\n"
                 f"Open GOLD_AI positions: {len(previous_positions)}\n\n"
                 "Commands: /status • /positions • /pause"
@@ -267,13 +275,15 @@ def main() -> None:
                                 f"[{datetime.now().strftime('%H:%M:%S')}] {label} "
                                 f"{market}/{client.symbol} {signal.strategy_id} {signal.direction} "
                                 f"vol={result.volume} planned_risk={result.planned_risk_cash:.2f} "
-                                f"({result.planned_risk_pct:.3f}%) price={result.price} "
+                                f"({result.planned_risk_pct:.3f}%) portfolio_after="
+                                f"{result.portfolio_post_trade_risk_pct:.3f}% price={result.price} "
                                 f"SL={result.stop_loss} TP={result.take_profit} {result.message}"
                             )
 
                             journal = (
                                 f"{label} | {market} {signal.strategy_id} {signal.direction} | "
                                 f"vol {result.volume} | risk {result.planned_risk_pct:.3f}% | "
+                                f"portfolio {result.portfolio_post_trade_risk_pct:.3f}% | "
                                 f"entry {result.price} | SL {result.stop_loss} | TP {result.take_profit}"
                             )
                             telegram.update_snapshot(journal_text=journal)
@@ -290,7 +300,9 @@ def main() -> None:
                                     f"SL:    {_fmt_price(result.stop_loss)}\n"
                                     f"TP:    {_fmt_price(result.take_profit)}\n\n"
                                     f"Planned risk: {result.planned_risk_pct:.3f}% "
-                                    f"(~{result.planned_risk_cash:.2f})"
+                                    f"(~{result.planned_risk_cash:.2f})\n"
+                                    f"Portfolio after entry: {result.portfolio_post_trade_risk_pct:.3f}% "
+                                    f"/ {MAX_TOTAL_OPEN_RISK_PCT:.3f}%"
                                 )
                                 if result.ticket and message_id:
                                     telegram_trade_messages[int(result.ticket)] = int(message_id)
