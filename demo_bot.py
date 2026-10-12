@@ -223,6 +223,119 @@ def _estimate_trade_pnl(
     )
 
 
+def _mini_journal_text() -> str:
+    account = mt5.account_info()
+    currency = str(account.currency) if account is not None else ""
+
+    now_utc = datetime.now(timezone.utc)
+    deals = mt5.history_deals_get(
+        datetime(2000, 1, 1, tzinfo=timezone.utc),
+        now_utc,
+    ) or ()
+
+    grouped: dict[int, list[object]] = {}
+    for deal in deals:
+        position_id = int(getattr(deal, "position_id", 0) or 0)
+        if position_id <= 0:
+            continue
+        comment = str(getattr(deal, "comment", "") or "")
+        magic = int(getattr(deal, "magic", -1))
+        if magic != DEMO_MAGIC and not comment.startswith("GOLD_AI:"):
+            continue
+        grouped.setdefault(position_id, []).append(deal)
+
+    closed_rows: list[dict] = []
+    for position_id, position_deals in grouped.items():
+        exit_deals = [
+            deal for deal in position_deals
+            if int(getattr(deal, "entry", -1)) in {
+                int(getattr(mt5, "DEAL_ENTRY_OUT", 1)),
+                int(getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)),
+            }
+        ]
+        if not exit_deals:
+            continue
+
+        pnl = sum(
+            float(getattr(deal, "profit", 0.0))
+            + float(getattr(deal, "commission", 0.0))
+            + float(getattr(deal, "swap", 0.0))
+            + float(getattr(deal, "fee", 0.0))
+            for deal in position_deals
+        )
+
+        strategy = "UNKNOWN"
+        for deal in position_deals:
+            comment = str(getattr(deal, "comment", "") or "")
+            if comment.startswith("GOLD_AI:"):
+                strategy = comment.split(":", 1)[1] or "UNKNOWN"
+                break
+
+        close_time = max(int(getattr(deal, "time", 0) or 0) for deal in exit_deals)
+        close_local_date = datetime.fromtimestamp(close_time).date() if close_time else None
+        closed_rows.append({
+            "position_id": position_id,
+            "pnl": pnl,
+            "strategy": strategy,
+            "date": close_local_date,
+        })
+
+    def stats(rows: list[dict]) -> tuple[int, int, int, float, float]:
+        trades = len(rows)
+        wins = sum(1 for row in rows if row["pnl"] > 0)
+        losses = sum(1 for row in rows if row["pnl"] < 0)
+        net = sum(float(row["pnl"]) for row in rows)
+        gross_profit = sum(float(row["pnl"]) for row in rows if row["pnl"] > 0)
+        gross_loss = abs(sum(float(row["pnl"]) for row in rows if row["pnl"] < 0))
+        pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+        return trades, wins, losses, net, pf
+
+    today = datetime.now().date()
+    today_rows = [row for row in closed_rows if row["date"] == today]
+    t_trades, t_wins, t_losses, t_net, _ = stats(today_rows)
+    a_trades, a_wins, a_losses, a_net, a_pf = stats(closed_rows)
+
+    today_wr = (100.0 * t_wins / t_trades) if t_trades else 0.0
+    all_wr = (100.0 * a_wins / a_trades) if a_trades else 0.0
+    pf_text = "∞" if a_pf == float("inf") else f"{a_pf:.2f}"
+
+    open_positions = _bot_positions()
+    floating = sum(float(getattr(p, "profit", 0.0)) for p in open_positions.values())
+
+    strategy_totals: dict[str, float] = {}
+    strategy_counts: dict[str, int] = {}
+    for row in closed_rows:
+        strategy = str(row["strategy"])
+        strategy_totals[strategy] = strategy_totals.get(strategy, 0.0) + float(row["pnl"])
+        strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+
+    lines = [
+        "📒 GOLD_AI — MINI JOURNAL",
+        "",
+        "TODAY",
+        f"Trades: {t_trades} | W: {t_wins} | L: {t_losses} | WR: {today_wr:.1f}%",
+        f"Net P/L: {_fmt_money(t_net, currency)}",
+        "",
+        "ALL TIME",
+        f"Trades: {a_trades} | W: {a_wins} | L: {a_losses} | WR: {all_wr:.1f}%",
+        f"Net P/L: {_fmt_money(a_net, currency)}",
+        f"Profit Factor: {pf_text}",
+        "",
+        f"Open positions: {len(open_positions)}",
+        f"Floating P/L: {_fmt_money(floating, currency)}",
+    ]
+
+    if strategy_totals:
+        lines.extend(["", "BY STRATEGY"])
+        for strategy in sorted(strategy_totals):
+            lines.append(
+                f"{strategy}: {_fmt_money(strategy_totals[strategy], currency)} "
+                f"({strategy_counts[strategy]} trades)"
+            )
+
+    return "\n".join(lines)
+
+
 def _closed_position_event(ticket: int, old_position: object) -> tuple[str, float, object]:
     deals = mt5.history_deals_get(position=ticket) or ()
     exit_deals = [
@@ -354,8 +467,10 @@ def main() -> None:
                 "positions": len(previous_positions),
             },
             positions_text=_positions_text(previous_positions),
+            journal_text=_mini_journal_text(),
         )
         telegram.start()
+        last_journal_refresh = time.monotonic()
 
         print("GOLD_AI MULTI-MARKET TRADER")
         print(f"ACCOUNT       : {account['login']} @ {account['server']}")
@@ -496,7 +611,6 @@ def main() -> None:
                                 f"portfolio {result.portfolio_post_trade_risk_pct:.3f}% | "
                                 f"entry {result.price} | SL {result.stop_loss} | TP {result.take_profit}"
                             )
-                            telegram.update_snapshot(journal_text=journal)
 
                             if result.sent:
                                 side_icon = "🟢" if signal.direction == "BUY" else "🔴"
@@ -552,7 +666,6 @@ def main() -> None:
                                 f"[{datetime.now().strftime('%H:%M:%S')}] TRAIL "
                                 f"ticket={trail.ticket} SL={trail.old_sl} -> {trail.new_sl}"
                             )
-                            telegram.update_snapshot(journal_text=trail_text.replace("\n", " | "))
                             if telegram.configured:
                                 telegram.notify(trail_text)
 
@@ -566,7 +679,6 @@ def main() -> None:
                             summary = f"❌ SL HIT • {old_position.symbol} • {pnl:+.2f}"
                         else:
                             summary = f"🏁 TRADE CLOSED • {old_position.symbol} • {pnl:+.2f}"
-                        telegram.update_snapshot(journal_text=summary)
                         telegram.notify(
                             summary,
                             reply_to_message_id=telegram_trade_messages.get(ticket),
@@ -574,6 +686,11 @@ def main() -> None:
                         telegram_trade_messages.pop(ticket, None)
 
                 account_now = mt5.account_info()
+                journal_snapshot = None
+                if time.monotonic() - last_journal_refresh >= 30:
+                    journal_snapshot = _mini_journal_text()
+                    last_journal_refresh = time.monotonic()
+
                 telegram.update_snapshot(
                     status={
                         "account": f"{account_now.login} @ {account_now.server}" if account_now else "-",
@@ -583,6 +700,7 @@ def main() -> None:
                         "positions": len(current_positions),
                     },
                     positions_text=_positions_text(current_positions),
+                    journal_text=journal_snapshot,
                 )
                 previous_positions = current_positions
                 time.sleep(DEMO_POLL_SECONDS)
