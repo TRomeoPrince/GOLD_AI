@@ -186,7 +186,7 @@ def main() -> None:
 
         primary_symbol = next(iter(clients.values())).symbol
         guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
-        account = guard.assert_demo_account()
+        account = guard.assert_trading_account()
 
         session_values = {
             "asian_start_hour": ASIAN_START_HOUR,
@@ -252,10 +252,10 @@ def main() -> None:
         )
         telegram.start()
 
-        print("GOLD_AI MULTI-MARKET DEMO TRADER")
+        print("GOLD_AI MULTI-MARKET TRADER")
         print(f"ACCOUNT       : {account['login']} @ {account['server']}")
-        print("ACCOUNT TYPE  : DEMO")
-        print("REAL ACCOUNT  : HARD-BLOCKED")
+        print(f"ACCOUNT TYPE  : {account['account_type']}")
+        print("LIVE ACCESS   : ALLOWED (strict risk guard remains active)")
         print(f"MARKETS       : {market_text}")
         print("TIMEFRAME     : M5")
         print(f"RISK / TRADE  : STRICT {DEMO_RISK_PCT}% of current equity")
@@ -289,7 +289,7 @@ def main() -> None:
         if telegram.configured:
             telegram.notify(
                 "🤖 GOLD_AI — ONLINE\n\n"
-                f"Account: Demo • {account['login']}\n"
+                f"Account: {account['account_type']} • {account['login']}\n"
                 f"Broker: {account['server']}\n"
                 f"Markets: {market_text}\n"
                 f"Risk: STRICT {DEMO_RISK_PCT}% per trade\n"
