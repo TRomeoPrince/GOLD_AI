@@ -97,23 +97,89 @@ def _bot_positions() -> dict[int, object]:
 def _positions_text(positions: dict[int, object]) -> str:
     if not positions:
         return "📊 GOLD_AI — OPEN POSITIONS\n\nNo open GOLD_AI positions."
+
+    account = mt5.account_info()
+    currency = str(account.currency) if account is not None else ""
     lines = [f"📊 GOLD_AI — OPEN POSITIONS ({len(positions)})"]
-    total = 0.0
+
+    total_floating = 0.0
+    total_sl_pnl = 0.0
+    total_tp_pnl = 0.0
+    sl_known = True
+    tp_known = True
+
     for index, p in enumerate(positions.values(), 1):
         side = "🟢 BUY" if int(p.type) == int(mt5.POSITION_TYPE_BUY) else "🔴 SELL"
+        direction = "BUY" if int(p.type) == int(mt5.POSITION_TYPE_BUY) else "SELL"
         pnl = float(p.profit)
-        total += pnl
+        total_floating += pnl
+
+        sl = float(getattr(p, "sl", 0.0) or 0.0)
+        tp = float(getattr(p, "tp", 0.0) or 0.0)
+        order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+
+        sl_pnl = None
+        tp_pnl = None
+        if sl > 0:
+            value = mt5.order_calc_profit(
+                order_type, str(p.symbol), float(p.volume), float(p.price_open), sl
+            )
+            if value is not None:
+                sl_pnl = float(value)
+                total_sl_pnl += sl_pnl
+            else:
+                sl_known = False
+        else:
+            sl_known = False
+
+        if tp > 0:
+            value = mt5.order_calc_profit(
+                order_type, str(p.symbol), float(p.volume), float(p.price_open), tp
+            )
+            if value is not None:
+                tp_pnl = float(value)
+                total_tp_pnl += tp_pnl
+            else:
+                tp_known = False
+        else:
+            tp_known = False
+
+        sl_text = (
+            f"{_fmt_price(sl)} ({_fmt_money(sl_pnl, currency)})"
+            if sl_pnl is not None
+            else f"{_fmt_price(sl)} (estimate unavailable)"
+        )
+        tp_text = (
+            f"{_fmt_price(tp)} ({_fmt_money(tp_pnl, currency)})"
+            if tp_pnl is not None
+            else f"{_fmt_price(tp)} (estimate unavailable)"
+        )
+
         lines.extend([
             "",
             f"{index}. {side} {p.symbol} • {p.volume} lot",
-            f"Entry   {p.price_open}",
-            f"Current {p.price_current}",
-            f"SL      {p.sl}",
-            f"TP      {p.tp}",
-            f"P/L     {pnl:+.2f}",
+            f"Entry   {_fmt_price(p.price_open)}",
+            f"Current {_fmt_price(p.price_current)}",
+            f"SL      {sl_text}",
+            f"TP      {tp_text}",
+            f"P/L     {_fmt_money(pnl, currency)}",
             f"Ticket  #{p.ticket}",
         ])
-    lines.extend(["", f"Floating P/L: {total:+.2f}"])
+
+    lines.extend([
+        "",
+        f"Floating P/L: {_fmt_money(total_floating, currency)}",
+        (
+            f"Total at all SLs: {_fmt_money(total_sl_pnl, currency)}"
+            if sl_known
+            else "Total at all SLs: incomplete — one or more SL estimates unavailable"
+        ),
+        (
+            f"Total at all TPs: {_fmt_money(total_tp_pnl, currency)}"
+            if tp_known
+            else "Total at all TPs: incomplete — one or more TP estimates unavailable"
+        ),
+    ])
     return "\n".join(lines)
 
 
