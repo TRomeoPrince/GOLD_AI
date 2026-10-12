@@ -188,33 +188,40 @@ def main() -> None:
         guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
         account = guard.assert_trading_account()
 
-        session_values = {
-            "asian_start_hour": ASIAN_START_HOUR,
-            "asian_end_hour": ASIAN_END_HOUR,
-            "london_start_hour": LONDON_START_HOUR,
-            "london_end_hour": LONDON_END_HOUR,
-        }
-        if any(v is None for v in session_values.values()):
-            raise RuntimeError(
-                "M15 Sweep & Flip session boundaries are not configured. "
-                "Set GOLD_AI_ASIAN_START_HOUR, GOLD_AI_ASIAN_END_HOUR, "
-                "GOLD_AI_LONDON_START_HOUR and GOLD_AI_LONDON_END_HOUR "
-                "in the same timezone used by the MT5 candle timestamps."
-            )
-
-        registries = {
-            market: StrategyRegistry(
-                market=market,
-                asian_start_hour=ASIAN_START_HOUR,
-                asian_end_hour=ASIAN_END_HOUR,
-                london_start_hour=LONDON_START_HOUR,
-                london_end_hour=LONDON_END_HOUR,
-                h1_pivot_span=M15_H1_PIVOT_SPAN,
-                stop_buffer_fraction=M15_STOP_BUFFER_FRACTION,
-                minimum_reward_r=M15_MIN_REWARD_R,
-            )
+        needs_sweep_flip_sessions = any(
+            market.upper() in {"US30", "US30.CASH", "US30.STD"}
             for market in clients
-        }
+        )
+        if needs_sweep_flip_sessions:
+            session_values = {
+                "asian_start_hour": ASIAN_START_HOUR,
+                "asian_end_hour": ASIAN_END_HOUR,
+                "london_start_hour": LONDON_START_HOUR,
+                "london_end_hour": LONDON_END_HOUR,
+            }
+            if any(v is None for v in session_values.values()):
+                raise RuntimeError(
+                    "US30 M15 Sweep & Flip session boundaries are not configured. "
+                    "Set GOLD_AI_ASIAN_START_HOUR, GOLD_AI_ASIAN_END_HOUR, "
+                    "GOLD_AI_LONDON_START_HOUR and GOLD_AI_LONDON_END_HOUR "
+                    "in the same timezone used by the MT5 candle timestamps."
+                )
+
+        registries = {}
+        for market in clients:
+            if market.upper() in {"US30", "US30.CASH", "US30.STD"}:
+                registries[market] = StrategyRegistry(
+                    market=market,
+                    asian_start_hour=ASIAN_START_HOUR,
+                    asian_end_hour=ASIAN_END_HOUR,
+                    london_start_hour=LONDON_START_HOUR,
+                    london_end_hour=LONDON_END_HOUR,
+                    h1_pivot_span=M15_H1_PIVOT_SPAN,
+                    stop_buffer_fraction=M15_STOP_BUFFER_FRACTION,
+                    minimum_reward_r=M15_MIN_REWARD_R,
+                )
+            else:
+                registries[market] = StrategyRegistry(market=market)
         executors = {
             market: DemoExecutor(
                 client.symbol,
@@ -261,11 +268,14 @@ def main() -> None:
         print(f"RISK / TRADE  : STRICT {DEMO_RISK_PCT}% of current equity")
         print(f"STRATEGIES    : {strategy_text}")
         print("DAILY CAPS    : DISABLED")
-        print(
-            f"SESSIONS      : Asian {ASIAN_START_HOUR:02d}:00-{ASIAN_END_HOUR:02d}:00 | "
-            f"London {LONDON_START_HOUR:02d}:00-{LONDON_END_HOUR:02d}:00 "
-            "(MT5 candle timezone)"
-        )
+        if needs_sweep_flip_sessions:
+            print(
+                f"SESSIONS      : Asian {ASIAN_START_HOUR:02d}:00-{ASIAN_END_HOUR:02d}:00 | "
+                f"London {LONDON_START_HOUR:02d}:00-{LONDON_END_HOUR:02d}:00 "
+                "(MT5 candle timezone)"
+            )
+        else:
+            print("SESSIONS      : N/A for current Gold-only routing")
         print(f"OPEN RISK CAP : {MAX_TOTAL_OPEN_RISK_PCT}% across all GOLD_AI positions")
         print(
             "M15 TRAILING  : "
