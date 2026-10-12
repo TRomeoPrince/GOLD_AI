@@ -48,6 +48,16 @@ DEMO_RISK_PCT = float(os.getenv("GOLD_AI_RISK_PCT", "0.9"))
 if not 0.1 <= DEMO_RISK_PCT <= 2.0:
     raise ValueError("GOLD_AI_RISK_PCT must be between 0.1 and 2.0 percent.")
 
+# Small-account minimum-lot adaptation.
+# Normal sizing still targets DEMO_RISK_PCT. If that produces less than the
+# broker minimum volume, the bot may use the broker minimum lot only when the
+# resulting stop-loss risk stays below this hard percentage ceiling.
+SMALL_ACCOUNT_MAX_RISK_PCT = float(
+    os.getenv("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT", "20.0")
+)
+if not 0 < SMALL_ACCOUNT_MAX_RISK_PCT <= 100:
+    raise ValueError("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT must be > 0 and <= 100.")
+
 DEMO_POLL_SECONDS = 5
 DEMO_MAX_SIGNAL_AGE_MINUTES = 20
 DEMO_MAGIC = 560090
