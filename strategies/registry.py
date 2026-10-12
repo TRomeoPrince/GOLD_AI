@@ -1,29 +1,31 @@
-from .m15_sweep_flip import M15SweepFlipStrategy
+from .m15_breakout import M15BreakoutStrategy
 from .support_resistance import SupportResistanceStrategy
 
 
 class StrategyRegistry:
-    """Current GOLD_AI market-specific strategy routing.
+    """Current GOLD_AI market-specific routing.
 
-    GOLD/XAUUSD: refined Support & Resistance (the strongest long-run Gold
-    candidate from the previous research cycle).
+    GOLD/XAUUSD:
+      - refined Support & Resistance
+      - restored M15 Breakout
 
-    US30: video-derived M15 Sweep & Flip with structure trailing handled by the
-    execution layer.
+    US30:
+      - restored M15 Breakout
 
-    No other legacy strategies are enabled by this registry.
+    Sweep & Flip is disabled from active routing.
     """
 
     def __init__(self, market: str | None = None, **strategy_kwargs):
         market_key = (market or "").upper()
 
         if market_key in {"GOLD", "XAUUSD"}:
-            # Gold-only restoration requested by the user.
-            self.models = [SupportResistanceStrategy(min_stop_atr=1.5)]
+            self.models = [
+                SupportResistanceStrategy(min_stop_atr=1.5),
+                M15BreakoutStrategy(),
+            ]
         elif market_key in {"US30", "US30.CASH", "US30.STD"}:
-            self.models = [M15SweepFlipStrategy(**strategy_kwargs)]
+            self.models = [M15BreakoutStrategy()]
         else:
-            # Do not silently route unsupported/deprecated markets.
             self.models = []
 
     def scan(self, candles):
