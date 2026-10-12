@@ -53,7 +53,7 @@ if not 0.1 <= DEMO_RISK_PCT <= 2.0:
 # broker minimum volume, the bot may use the broker minimum lot only when the
 # resulting stop-loss risk stays below this hard percentage ceiling.
 SMALL_ACCOUNT_MAX_RISK_PCT = float(
-    os.getenv("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT", "20.0")
+    os.getenv("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT", "40.0")
 )
 if not 0 < SMALL_ACCOUNT_MAX_RISK_PCT <= 100:
     raise ValueError("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT must be > 0 and <= 100.")
