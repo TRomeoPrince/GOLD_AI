@@ -111,7 +111,7 @@ class TelegramController:
                 "GOLD_AI Telegram Control\n"
                 "/status - runtime/account status\n"
                 "/positions - cached open positions\n"
-                "/journal - latest journal event\n"
+                "/journal - GOLD_AI mini performance journal\n"
                 "/pause - block NEW entries only\n"
                 "/resume - allow new entries\n"
                 "/stop - stop GOLD_AI runtime; does NOT close positions"
