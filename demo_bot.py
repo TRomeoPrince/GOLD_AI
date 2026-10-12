@@ -315,7 +315,7 @@ def main() -> None:
                     if MAX_TOTAL_OPEN_RISK_PCT is not None
                     else "DISABLED\n"
                 )
-                f"Strategies: {strategy_text}\n"
+                + f"Strategies: {strategy_text}\n"
                 f"Open GOLD_AI positions: {len(previous_positions)}\n\n"
                 "Commands: /status • /positions • /pause"
             )
