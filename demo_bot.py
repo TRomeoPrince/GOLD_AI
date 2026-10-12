@@ -23,6 +23,7 @@ from config import (
     DEMO_RISK_PCT,
     M5_BARS,
     MAX_TOTAL_OPEN_RISK_PCT,
+    SMALL_ACCOUNT_MAX_RISK_PCT,
     M15_TRAILING_ENABLED,
     M15_TRAIL_ACTIVATE_R,
     M15_TRAIL_SWING_SPAN,
@@ -185,7 +186,13 @@ def main() -> None:
             )
 
         primary_symbol = next(iter(clients.values())).symbol
-        guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
+        guard = DemoExecutor(
+            primary_symbol,
+            DEMO_RISK_PCT,
+            DEMO_MAGIC,
+            MAX_TOTAL_OPEN_RISK_PCT,
+            SMALL_ACCOUNT_MAX_RISK_PCT,
+        )
         account = guard.assert_trading_account()
 
         needs_sweep_flip_sessions = False
@@ -214,6 +221,7 @@ def main() -> None:
                 DEMO_RISK_PCT,
                 DEMO_MAGIC,
                 MAX_TOTAL_OPEN_RISK_PCT,
+                SMALL_ACCOUNT_MAX_RISK_PCT,
             )
             for market, client in clients.items()
         }
@@ -263,6 +271,10 @@ def main() -> None:
         else:
             print("SESSIONS      : N/A for current Gold-only routing")
         print(f"OPEN RISK CAP : {MAX_TOTAL_OPEN_RISK_PCT}% across all GOLD_AI positions")
+        print(
+            f"SMALL ACCOUNT : minimum-lot adaptation allowed up to "
+            f"{SMALL_ACCOUNT_MAX_RISK_PCT}% risk/trade"
+        )
         print(
             "M15 TRAILING  : "
             + (
