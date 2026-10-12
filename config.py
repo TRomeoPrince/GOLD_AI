@@ -7,7 +7,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 
 SYMBOL_HINT = "XAUUSD"
 
-# Current routing: Gold refined Support & Resistance; US30 M15 Sweep & Flip.
+# Current routing: Gold refined Support & Resistance + M15 Breakout; US30 M15 Breakout.
 # Current explicitly confirmed deployment/research markets:
 # Gold + US30 only. Override with GOLD_AI_MARKETS if needed.
 MARKET_HINTS = {
@@ -59,8 +59,8 @@ MAX_TOTAL_OPEN_RISK_PCT = float(os.getenv("GOLD_AI_MAX_OPEN_RISK_PCT", "1.8"))
 DAILY_LOSS_CAP_PCT = None
 DAILY_PROFIT_CAP_PCT = None
 
-# Exact video/session clock boundaries were not recoverable from the sync handoff.
-# They MUST be supplied in broker-data time; no silent defaults are used.
+# Legacy Sweep & Flip session settings retained for research compatibility only.
+# Active M15 Breakout routing does not require session boundaries.
 def _optional_hour(name: str):
     raw = os.getenv(name, "").strip()
     return int(raw) if raw else None
