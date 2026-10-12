@@ -124,6 +124,39 @@ def _fmt_price(value: object) -> str:
         return str(value)
 
 
+def _fmt_money(value: float, currency: str) -> str:
+    currency = (currency or "").upper()
+    sign = "+" if value >= 0 else "-"
+    amount = abs(float(value))
+    if currency == "USD":
+        return f"{sign}" + "$" + f"{amount:.2f}"
+    return f"{sign}{amount:.2f} {currency}".strip()
+
+
+def _estimate_trade_pnl(
+    symbol: str,
+    direction: str,
+    volume: float,
+    entry: float,
+    stop_loss: float,
+    take_profit: float,
+) -> tuple[float | None, float | None]:
+    if volume <= 0:
+        return None, None
+
+    order_type = mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL
+    sl_pnl = mt5.order_calc_profit(
+        order_type, symbol, float(volume), float(entry), float(stop_loss)
+    )
+    tp_pnl = mt5.order_calc_profit(
+        order_type, symbol, float(volume), float(entry), float(take_profit)
+    )
+    return (
+        float(sl_pnl) if sl_pnl is not None else None,
+        float(tp_pnl) if tp_pnl is not None else None,
+    )
+
+
 def _closed_position_event(ticket: int, old_position: object) -> tuple[str, float, object]:
     deals = mt5.history_deals_get(position=ticket) or ()
     exit_deals = [
@@ -164,8 +197,8 @@ def _build_market_stack() -> tuple[dict, object]:
 
 def main() -> None:
     load_dotenv()
-    orders_log = Path(REPORTS_DIR) / "demo_orders.jsonl"
-    executed = _load_executed(orders_log)
+    orders_log: Path | None = None
+    executed: set[str] = set()
     telegram_trade_messages: dict[int, int] = {}
 
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -194,6 +227,11 @@ def main() -> None:
             SMALL_ACCOUNT_MAX_RISK_PCT,
         )
         account = guard.assert_trading_account()
+
+        # Keep dedup/order history isolated per MT5 account so switching accounts
+        # does not make a fresh account inherit signal keys from another login.
+        orders_log = Path(REPORTS_DIR) / f"demo_orders_{account['login']}.jsonl"
+        executed = _load_executed(orders_log)
 
         needs_sweep_flip_sessions = False
         if needs_sweep_flip_sessions:
@@ -356,6 +394,8 @@ def main() -> None:
                                 "signal": asdict(signal),
                                 "result": asdict(result),
                             }
+                            if orders_log is None:
+                                raise RuntimeError("Account-specific order journal is not initialized.")
                             _log(orders_log, row)
 
                             # AI review is deliberately submitted AFTER the deterministic
@@ -394,6 +434,19 @@ def main() -> None:
 
                             if result.sent:
                                 side_icon = "🟢" if signal.direction == "BUY" else "🔴"
+                                account_now = mt5.account_info()
+                                currency = str(account_now.currency) if account_now else str(account.get("currency", ""))
+                                sl_pnl, tp_pnl = _estimate_trade_pnl(
+                                    client.symbol,
+                                    signal.direction,
+                                    result.volume,
+                                    result.price,
+                                    result.stop_loss,
+                                    result.take_profit,
+                                )
+                                sl_cash = _fmt_money(sl_pnl, currency) if sl_pnl is not None else "estimate unavailable"
+                                tp_cash = _fmt_money(tp_pnl, currency) if tp_pnl is not None else "estimate unavailable"
+
                                 message_id = telegram.notify(
                                     "🚀 GOLD_AI — NEW TRADE\n\n"
                                     f"Market: {market}\n"
@@ -401,10 +454,10 @@ def main() -> None:
                                     f"{side_icon} {signal.direction} {client.symbol}\n"
                                     f"Size: {result.volume} lot\n\n"
                                     f"Entry: {_fmt_price(result.price)}\n"
-                                    f"SL:    {_fmt_price(result.stop_loss)}\n"
-                                    f"TP:    {_fmt_price(result.take_profit)}\n\n"
+                                    f"SL:    {_fmt_price(result.stop_loss)} ({sl_cash})\n"
+                                    f"TP:    {_fmt_price(result.take_profit)} ({tp_cash})\n\n"
                                     f"Planned risk: {result.planned_risk_pct:.3f}% "
-                                    f"(~{result.planned_risk_cash:.2f})\n"
+                                    f"(~{result.planned_risk_cash:.2f} {currency})\n"
                                     f"Portfolio after entry: {result.portfolio_post_trade_risk_pct:.3f}% "
                                     + (
                                         f"/ {MAX_TOTAL_OPEN_RISK_PCT:.3f}%"
