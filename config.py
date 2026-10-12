@@ -62,8 +62,12 @@ DEMO_POLL_SECONDS = 5
 DEMO_MAX_SIGNAL_AGE_MINUTES = 20
 DEMO_MAGIC = 560090
 
-# Portfolio risk guard remains infrastructure, not a daily cap.
-MAX_TOTAL_OPEN_RISK_PCT = float(os.getenv("GOLD_AI_MAX_OPEN_RISK_PCT", "1.8"))
+# Portfolio open-risk cap is disabled by default for the current live test.
+# Set GOLD_AI_MAX_OPEN_RISK_PCT to a positive percentage to re-enable it.
+_raw_open_risk_cap = os.getenv("GOLD_AI_MAX_OPEN_RISK_PCT", "").strip()
+MAX_TOTAL_OPEN_RISK_PCT = float(_raw_open_risk_cap) if _raw_open_risk_cap else None
+if MAX_TOTAL_OPEN_RISK_PCT is not None and MAX_TOTAL_OPEN_RISK_PCT <= 0:
+    raise ValueError("GOLD_AI_MAX_OPEN_RISK_PCT must be positive when enabled.")
 
 # Research experiments only: not enabled unless explicitly changed.
 DAILY_LOSS_CAP_PCT = None
