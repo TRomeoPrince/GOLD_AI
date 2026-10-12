@@ -270,7 +270,14 @@ def main() -> None:
             )
         else:
             print("SESSIONS      : N/A for current Gold-only routing")
-        print(f"OPEN RISK CAP : {MAX_TOTAL_OPEN_RISK_PCT}% across all GOLD_AI positions")
+        print(
+            "OPEN RISK CAP : "
+            + (
+                f"{MAX_TOTAL_OPEN_RISK_PCT}% across all GOLD_AI positions"
+                if MAX_TOTAL_OPEN_RISK_PCT is not None
+                else "DISABLED"
+            )
+        )
         print(
             f"SMALL ACCOUNT : minimum-lot adaptation allowed up to "
             f"{SMALL_ACCOUNT_MAX_RISK_PCT}% risk/trade"
@@ -302,7 +309,12 @@ def main() -> None:
                 f"Markets: {market_text}\n"
                 f"Risk: STRICT {DEMO_RISK_PCT}% per trade\n"
                 "Daily caps: OFF\n"
-                f"Max total open risk: {MAX_TOTAL_OPEN_RISK_PCT}%\n"
+                f"Max total open risk: "
+                + (
+                    f"{MAX_TOTAL_OPEN_RISK_PCT}%\n"
+                    if MAX_TOTAL_OPEN_RISK_PCT is not None
+                    else "DISABLED\n"
+                )
                 f"Strategies: {strategy_text}\n"
                 f"Open GOLD_AI positions: {len(previous_positions)}\n\n"
                 "Commands: /status • /positions • /pause"
@@ -394,7 +406,11 @@ def main() -> None:
                                     f"Planned risk: {result.planned_risk_pct:.3f}% "
                                     f"(~{result.planned_risk_cash:.2f})\n"
                                     f"Portfolio after entry: {result.portfolio_post_trade_risk_pct:.3f}% "
-                                    f"/ {MAX_TOTAL_OPEN_RISK_PCT:.3f}%"
+                                    + (
+                                        f"/ {MAX_TOTAL_OPEN_RISK_PCT:.3f}%"
+                                        if MAX_TOTAL_OPEN_RISK_PCT is not None
+                                        else "/ cap disabled"
+                                    )
                                 )
                                 if result.ticket and message_id:
                                     telegram_trade_messages[int(result.ticket)] = int(message_id)
