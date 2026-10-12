@@ -29,7 +29,7 @@ class DemoOrderResult:
 
 
 class DemoExecutor:
-    """MT5 market-order executor with hard demo-account and risk guards."""
+    """MT5 market-order executor with strict risk guards for demo or live accounts."""
 
     def __init__(
         self,
@@ -48,18 +48,10 @@ class DemoExecutor:
         )
 
     @staticmethod
-    def assert_demo_account() -> dict:
+    def assert_trading_account() -> dict:
         account = mt5.account_info()
         if account is None:
             raise RuntimeError("MT5 account information unavailable.")
-
-        demo_mode = int(getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0))
-        trade_mode = int(getattr(account, "trade_mode", -1))
-        if trade_mode != demo_mode:
-            raise RuntimeError(
-                "DEMO EXECUTION BLOCKED: the connected MT5 account is not a demo account. "
-                f"login={account.login}, server={account.server}, trade_mode={trade_mode}"
-            )
 
         terminal = mt5.terminal_info()
         if terminal is None:
@@ -67,15 +59,38 @@ class DemoExecutor:
         if not bool(getattr(terminal, "trade_allowed", False)):
             raise RuntimeError("MT5 trading is not allowed. Enable Algo Trading in the terminal.")
 
+        trade_mode = int(getattr(account, "trade_mode", -1))
+        demo_mode = int(getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0))
+        real_mode = int(getattr(mt5, "ACCOUNT_TRADE_MODE_REAL", 2))
+        account_type = (
+            "DEMO" if trade_mode == demo_mode
+            else "REAL" if trade_mode == real_mode
+            else f"MODE_{trade_mode}"
+        )
+
+        balance = float(account.balance)
+        equity = float(account.equity)
+        if equity <= 0:
+            raise RuntimeError(
+                f"Execution blocked because account equity is not positive: {equity:.8f}"
+            )
+
+        # No minimum-balance block. Tiny accounts are allowed to run, but the
+        # existing volume/risk guard will skip any trade whose broker minimum
+        # lot would exceed the configured percentage risk.
         return {
             "login": int(account.login),
             "server": str(account.server),
-            "balance": float(account.balance),
-            "equity": float(account.equity),
+            "balance": balance,
+            "equity": equity,
             "currency": str(account.currency),
             "trade_mode": trade_mode,
+            "account_type": account_type,
             "margin_mode": int(getattr(account, "margin_mode", -1)),
         }
+
+    # Backward-compatible alias retained for older callers.
+    assert_demo_account = assert_trading_account
 
     def _current_price(self, direction: str) -> float:
         tick = mt5.symbol_info_tick(self.symbol)
@@ -243,7 +258,7 @@ class DemoExecutor:
         return None, None, "; ".join(attempts)
 
     def send(self, signal: StrategySignal) -> DemoOrderResult:
-        self.assert_demo_account()
+        self.assert_trading_account()
         price = self._current_price(signal.direction)
 
         if not self._valid_geometry(signal, price):
