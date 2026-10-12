@@ -188,10 +188,7 @@ def main() -> None:
         guard = DemoExecutor(primary_symbol, DEMO_RISK_PCT, DEMO_MAGIC, MAX_TOTAL_OPEN_RISK_PCT)
         account = guard.assert_trading_account()
 
-        needs_sweep_flip_sessions = any(
-            market.upper() in {"US30", "US30.CASH", "US30.STD"}
-            for market in clients
-        )
+        needs_sweep_flip_sessions = False
         if needs_sweep_flip_sessions:
             session_values = {
                 "asian_start_hour": ASIAN_START_HOUR,
@@ -207,21 +204,10 @@ def main() -> None:
                     "in the same timezone used by the MT5 candle timestamps."
                 )
 
-        registries = {}
-        for market in clients:
-            if market.upper() in {"US30", "US30.CASH", "US30.STD"}:
-                registries[market] = StrategyRegistry(
-                    market=market,
-                    asian_start_hour=ASIAN_START_HOUR,
-                    asian_end_hour=ASIAN_END_HOUR,
-                    london_start_hour=LONDON_START_HOUR,
-                    london_end_hour=LONDON_END_HOUR,
-                    h1_pivot_span=M15_H1_PIVOT_SPAN,
-                    stop_buffer_fraction=M15_STOP_BUFFER_FRACTION,
-                    minimum_reward_r=M15_MIN_REWARD_R,
-                )
-            else:
-                registries[market] = StrategyRegistry(market=market)
+        registries = {
+            market: StrategyRegistry(market=market)
+            for market in clients
+        }
         executors = {
             market: DemoExecutor(
                 client.symbol,
