@@ -223,9 +223,30 @@ def _estimate_trade_pnl(
     )
 
 
-def _mini_journal_text() -> str:
+def _mini_journal_text(selected_date: str | None = None) -> str:
     account = mt5.account_info()
-    currency = str(account.currency) if account is not None else ""
+    if account is None:
+        return "📒 GOLD_AI — MINI JOURNAL\n\nAccount information unavailable."
+
+    currency = str(account.currency)
+    current_balance = float(account.balance)
+    current_equity = float(account.equity)
+
+    try:
+        period_date = (
+            datetime.strptime(selected_date, "%Y-%m-%d").date()
+            if selected_date
+            else datetime.now().date()
+        )
+    except ValueError:
+        return (
+            "📒 GOLD_AI — MINI JOURNAL\n\n"
+            "Invalid date. Use /journal YYYY-MM-DD\n"
+            "Example: /journal 2026-10-12"
+        )
+
+    if period_date > datetime.now().date():
+        return "📒 GOLD_AI — MINI JOURNAL\n\nSelected date cannot be in the future."
 
     now_utc = datetime.now(timezone.utc)
     deals = mt5.history_deals_get(
@@ -290,43 +311,72 @@ def _mini_journal_text() -> str:
         pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
         return trades, wins, losses, net, pf
 
-    today = datetime.now().date()
-    today_rows = [row for row in closed_rows if row["date"] == today]
-    t_trades, t_wins, t_losses, t_net, _ = stats(today_rows)
+    period_rows = [row for row in closed_rows if row["date"] == period_date]
+    p_trades, p_wins, p_losses, p_net, p_pf = stats(period_rows)
     a_trades, a_wins, a_losses, a_net, a_pf = stats(closed_rows)
 
-    today_wr = (100.0 * t_wins / t_trades) if t_trades else 0.0
+    period_wr = (100.0 * p_wins / p_trades) if p_trades else 0.0
     all_wr = (100.0 * a_wins / a_trades) if a_trades else 0.0
-    pf_text = "∞" if a_pf == float("inf") else f"{a_pf:.2f}"
+    period_pf_text = "∞" if p_pf == float("inf") else f"{p_pf:.2f}"
+    all_pf_text = "∞" if a_pf == float("inf") else f"{a_pf:.2f}"
+
+    # Reconstruct account balance at the start of the selected local date by
+    # removing every balance-impacting deal from that date onward from the
+    # current balance. This includes manual trades/deposits/withdrawals too,
+    # so the denominator is the real account starting balance for that date.
+    start_of_period = datetime.combine(period_date, datetime.min.time())
+    balance_change_since_start = 0.0
+    for deal in deals:
+        deal_time = int(getattr(deal, "time", 0) or 0)
+        if deal_time <= 0:
+            continue
+        if datetime.fromtimestamp(deal_time) < start_of_period:
+            continue
+        balance_change_since_start += (
+            float(getattr(deal, "profit", 0.0))
+            + float(getattr(deal, "commission", 0.0))
+            + float(getattr(deal, "swap", 0.0))
+            + float(getattr(deal, "fee", 0.0))
+        )
+
+    starting_balance = current_balance - balance_change_since_start
+    roi_pct = (100.0 * p_net / starting_balance) if starting_balance > 0 else 0.0
 
     open_positions = _bot_positions()
     floating = sum(float(getattr(p, "profit", 0.0)) for p in open_positions.values())
 
     strategy_totals: dict[str, float] = {}
     strategy_counts: dict[str, int] = {}
-    for row in closed_rows:
+    for row in period_rows:
         strategy = str(row["strategy"])
         strategy_totals[strategy] = strategy_totals.get(strategy, 0.0) + float(row["pnl"])
         strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
 
+    label = "TODAY" if period_date == datetime.now().date() else period_date.isoformat()
     lines = [
         "📒 GOLD_AI — MINI JOURNAL",
         "",
-        "TODAY",
-        f"Trades: {t_trades} | W: {t_wins} | L: {t_losses} | WR: {today_wr:.1f}%",
-        f"Net P/L: {_fmt_money(t_net, currency)}",
+        label,
+        f"Starting balance: {_fmt_money(starting_balance, currency).lstrip('+')}",
+        f"Current balance:  {_fmt_money(current_balance, currency).lstrip('+')}",
+        f"Current equity:   {_fmt_money(current_equity, currency).lstrip('+')}",
+        f"ROI: {roi_pct:+.2f}%",
+        "",
+        f"Trades: {p_trades} | W: {p_wins} | L: {p_losses} | WR: {period_wr:.1f}%",
+        f"Net P/L: {_fmt_money(p_net, currency)}",
+        f"Profit Factor: {period_pf_text}",
         "",
         "ALL TIME",
         f"Trades: {a_trades} | W: {a_wins} | L: {a_losses} | WR: {all_wr:.1f}%",
         f"Net P/L: {_fmt_money(a_net, currency)}",
-        f"Profit Factor: {pf_text}",
+        f"Profit Factor: {all_pf_text}",
         "",
         f"Open positions: {len(open_positions)}",
         f"Floating P/L: {_fmt_money(floating, currency)}",
     ]
 
     if strategy_totals:
-        lines.extend(["", "BY STRATEGY"])
+        lines.extend(["", f"BY STRATEGY — {label}"])
         for strategy in sorted(strategy_totals):
             lines.append(
                 f"{strategy}: {_fmt_money(strategy_totals[strategy], currency)} "
@@ -469,6 +519,7 @@ def main() -> None:
             positions_text=_positions_text(previous_positions),
             journal_text=_mini_journal_text(),
         )
+        telegram.set_journal_provider(_mini_journal_text)
         telegram.start()
         last_journal_refresh = time.monotonic()
 
