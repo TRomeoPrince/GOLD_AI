@@ -37,10 +37,16 @@ class DemoExecutor:
         risk_pct: float,
         magic: int,
         max_total_open_risk_pct: float | None = None,
+        small_account_max_risk_pct: float | None = None,
     ) -> None:
         self.symbol = symbol
         self.risk_pct = float(risk_pct)
         self.magic = int(magic)
+        self.small_account_max_risk_pct = (
+            float(small_account_max_risk_pct)
+            if small_account_max_risk_pct is not None
+            else None
+        )
         self.max_total_open_risk_pct = (
             float(max_total_open_risk_pct)
             if max_total_open_risk_pct is not None
@@ -196,9 +202,32 @@ class DemoExecutor:
         if loss_one_lot <= 0:
             raise RuntimeError("Calculated stop loss for 1 lot is zero.")
 
-        volume = self._normalize_volume(risk_cash / loss_one_lot)
+        raw_volume = risk_cash / loss_one_lot
+        volume = self._normalize_volume(raw_volume)
+
         if volume <= 0:
-            return 0.0, risk_cash, 0.0
+            info = mt5.symbol_info(self.symbol)
+            if info is None:
+                raise RuntimeError(f"Symbol info unavailable for {self.symbol}.")
+            minimum_volume = float(info.volume_min)
+            minimum_loss = self._loss_for_volume(
+                direction, minimum_volume, entry, stop_loss
+            )
+            effective_risk_pct = (
+                100.0 * minimum_loss / equity if equity > 0 else float("inf")
+            )
+
+            # Adaptive small-account rule: preserve the strategy SL and use the
+            # broker minimum lot only if its exact loss remains under the
+            # configured hard ceiling. This permits very small balances such as
+            # $30 while retaining a final percentage-risk guard.
+            if (
+                self.small_account_max_risk_pct is not None
+                and effective_risk_pct <= self.small_account_max_risk_pct
+            ):
+                return minimum_volume, risk_cash, minimum_loss
+
+            return 0.0, risk_cash, minimum_loss
 
         planned_loss = self._loss_for_volume(direction, volume, entry, stop_loss)
 
@@ -290,12 +319,17 @@ class DemoExecutor:
         )
 
         if volume <= 0:
+            effective_pct = (100.0 * planned_loss / equity) if equity > 0 else float("inf")
+            info = mt5.symbol_info(self.symbol)
+            minimum_volume = float(info.volume_min) if info is not None else 0.0
             reason = (
-                "SKIPPED_RISK: calculated volume is below broker minimum."
-                if planned_loss <= 0
+                f"SKIPPED_SMALL_ACCOUNT_RISK: broker minimum {minimum_volume:g} lot "
+                f"would risk {planned_loss:.2f} ({effective_pct:.2f}% of equity), "
+                f"above adaptive ceiling "
+                f"{self.small_account_max_risk_pct:.2f}%."
+                if self.small_account_max_risk_pct is not None
                 else
-                f"SKIPPED_RISK_GUARD: broker-normalized order would risk "
-                f"{planned_loss:.2f}, above the {risk_budget:.2f} budget."
+                "SKIPPED_RISK: calculated volume is below broker minimum."
             )
             return DemoOrderResult(
                 False, signal.strategy_id, signal.direction, 0.0, price,
