@@ -6,7 +6,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 @dataclass
@@ -33,6 +33,13 @@ class TelegramController:
         self._status: dict[str, Any] = {}
         self._positions_text = "No position snapshot yet."
         self._journal_text = "No journal events yet."
+        self._journal_provider: Optional[Callable[[Optional[str]], str]] = None
+
+    def set_journal_provider(
+        self,
+        provider: Callable[[Optional[str]], str],
+    ) -> None:
+        self._journal_provider = provider
 
     @property
     def configured(self) -> bool:
@@ -111,7 +118,8 @@ class TelegramController:
                 "GOLD_AI Telegram Control\n"
                 "/status - runtime/account status\n"
                 "/positions - cached open positions\n"
-                "/journal - GOLD_AI mini performance journal\n"
+                "/journal - today's GOLD_AI mini journal\n"
+                "/journal YYYY-MM-DD - journal for a selected date\n"
                 "/pause - block NEW entries only\n"
                 "/resume - allow new entries\n"
                 "/stop - stop GOLD_AI runtime; does NOT close positions"
@@ -131,8 +139,16 @@ class TelegramController:
             with self._lock:
                 reply = self._positions_text
         elif command == "/journal":
-            with self._lock:
-                reply = self._journal_text
+            parts = text.split(maxsplit=1)
+            selected_date = parts[1].strip() if len(parts) > 1 else None
+            if self._journal_provider is not None:
+                try:
+                    reply = self._journal_provider(selected_date)
+                except Exception as exc:
+                    reply = f"📒 GOLD_AI — MINI JOURNAL\n\nCould not build journal: {exc}"
+            else:
+                with self._lock:
+                    reply = self._journal_text
         else:
             reply = "Unknown command. Use /help."
 
