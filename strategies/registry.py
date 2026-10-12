@@ -1,4 +1,7 @@
 from .m15_breakout import M15BreakoutStrategy
+from .market_structure import MarketStructureStrategy
+from .momentum_scalp import MomentumScalpStrategy
+from .pullback import PullbackStrategy
 from .support_resistance import SupportResistanceStrategy
 
 
@@ -7,24 +10,41 @@ class StrategyRegistry:
 
     GOLD/XAUUSD:
       - refined Support & Resistance
-      - restored M15 Breakout
+      - Market Structure
+      - Pullback
+      - Momentum Scalp
+      - M15 Breakout
 
     US30:
-      - restored M15 Breakout
+      - Market Structure
+      - Pullback
+      - Momentum Scalp
+      - M15 Breakout
 
-    Sweep & Flip is disabled from active routing.
+    Sweep & Flip remains disabled.
+
+    Risk sizing is NOT controlled here. All active strategies continue through
+    the shared executor, so the configured per-trade and portfolio risk guards
+    remain unchanged.
     """
 
     def __init__(self, market: str | None = None, **strategy_kwargs):
         market_key = (market or "").upper()
 
+        shared = [
+            MarketStructureStrategy(),
+            PullbackStrategy(),
+            MomentumScalpStrategy(min_stop_atr=1.5),
+            M15BreakoutStrategy(),
+        ]
+
         if market_key in {"GOLD", "XAUUSD"}:
             self.models = [
                 SupportResistanceStrategy(min_stop_atr=1.5),
-                M15BreakoutStrategy(),
+                *shared,
             ]
         elif market_key in {"US30", "US30.CASH", "US30.STD"}:
-            self.models = [M15BreakoutStrategy()]
+            self.models = shared
         else:
             self.models = []
 
