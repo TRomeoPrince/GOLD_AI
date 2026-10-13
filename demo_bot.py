@@ -24,6 +24,7 @@ from config import (
     M5_BARS,
     MAX_TOTAL_OPEN_RISK_PCT,
     SMALL_ACCOUNT_MAX_RISK_PCT,
+    MAX_CONCURRENT_POSITIONS,
     M15_TRAILING_ENABLED,
     M15_TRAIL_ACTIVATE_R,
     M15_TRAIL_SWING_SPAN,
@@ -454,6 +455,7 @@ def main() -> None:
             DEMO_MAGIC,
             MAX_TOTAL_OPEN_RISK_PCT,
             SMALL_ACCOUNT_MAX_RISK_PCT,
+            MAX_CONCURRENT_POSITIONS,
         )
         account = guard.assert_trading_account()
 
@@ -489,6 +491,7 @@ def main() -> None:
                 DEMO_MAGIC,
                 MAX_TOTAL_OPEN_RISK_PCT,
                 SMALL_ACCOUNT_MAX_RISK_PCT,
+                MAX_CONCURRENT_POSITIONS,
             )
             for market, client in clients.items()
         }
@@ -549,9 +552,10 @@ def main() -> None:
             )
         )
         print(
-            f"SMALL ACCOUNT : minimum-lot adaptation allowed up to "
+            f"SMALL ACCOUNT : minimum-lot adaptation capped at "
             f"{SMALL_ACCOUNT_MAX_RISK_PCT}% risk/trade"
         )
+        print(f"MAX POSITIONS : {MAX_CONCURRENT_POSITIONS}")
         print(
             "M15 TRAILING  : "
             + (
@@ -564,7 +568,7 @@ def main() -> None:
             f"AI MODE       : SHADOW / GROQ {ai_shadow.model} / "
             + ("CONFIGURED" if ai_shadow.api_key else "KEY MISSING")
         )
-        print("CONCURRENCY   : RISK-BASED (no simple trade-count cap)")
+        print(f"CONCURRENCY   : MAX {MAX_CONCURRENT_POSITIONS} GOLD_AI positions")
         print("OPPOSITE SIDE : ALLOWED IF THE MT5 ACCOUNT SUPPORTS HEDGING")
         print(f"POLLING       : every {DEMO_POLL_SECONDS}s")
         print(f"TELEGRAM      : {'ENABLED' if telegram.configured else 'DISABLED - env vars missing'}")
@@ -585,6 +589,7 @@ def main() -> None:
                     if MAX_TOTAL_OPEN_RISK_PCT is not None
                     else "DISABLED\n"
                 )
+                + f"Max open positions: {MAX_CONCURRENT_POSITIONS}\n"
                 + f"Strategies: {strategy_text}\n"
                 f"Open GOLD_AI positions: {len(previous_positions)}\n\n"
                 "Commands: /status • /positions • /pause"
