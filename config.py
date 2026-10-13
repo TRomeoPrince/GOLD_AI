@@ -69,11 +69,22 @@ MAX_TOTAL_OPEN_RISK_PCT = float(_raw_open_risk_cap) if _raw_open_risk_cap else N
 if MAX_TOTAL_OPEN_RISK_PCT is not None and MAX_TOTAL_OPEN_RISK_PCT <= 0:
     raise ValueError("GOLD_AI_MAX_OPEN_RISK_PCT must be positive when enabled.")
 
-# Hard concurrency guard. Even if several strategies fire together, the bot
-# will not stack more than this many GOLD_AI positions at once.
-MAX_CONCURRENT_POSITIONS = int(os.getenv("GOLD_AI_MAX_CONCURRENT_POSITIONS", "2"))
-if MAX_CONCURRENT_POSITIONS < 1:
-    raise ValueError("GOLD_AI_MAX_CONCURRENT_POSITIONS must be at least 1.")
+# Position count is not the primary guard. Risk is controlled by the portfolio
+# open-risk cap, while profitable older positions can be protected and allow
+# fresh entries. Set GOLD_AI_MAX_CONCURRENT_POSITIONS only if a hard count cap
+# is explicitly desired.
+_raw_max_positions = os.getenv("GOLD_AI_MAX_CONCURRENT_POSITIONS", "").strip()
+MAX_CONCURRENT_POSITIONS = int(_raw_max_positions) if _raw_max_positions else None
+if MAX_CONCURRENT_POSITIONS is not None and MAX_CONCURRENT_POSITIONS < 1:
+    raise ValueError("GOLD_AI_MAX_CONCURRENT_POSITIONS must be at least 1 when enabled.")
+
+# When a fresh same-direction position opens, older profitable positions are
+# moved into a small locked-profit zone. For Gold, one pip is derived from the
+# broker symbol digits/point size. Default is the middle of the requested
+# 9-15 pip zone and can be tuned within that range.
+STACK_PROFIT_LOCK_PIPS = float(os.getenv("GOLD_AI_STACK_PROFIT_LOCK_PIPS", "12"))
+if not 9.0 <= STACK_PROFIT_LOCK_PIPS <= 15.0:
+    raise ValueError("GOLD_AI_STACK_PROFIT_LOCK_PIPS must be between 9 and 15.")
 
 # Research experiments only: not enabled unless explicitly changed.
 DAILY_LOSS_CAP_PCT = None
