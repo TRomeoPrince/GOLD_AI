@@ -38,6 +38,7 @@ class DemoExecutor:
         magic: int,
         max_total_open_risk_pct: float | None = None,
         small_account_max_risk_pct: float | None = None,
+        max_concurrent_positions: int | None = None,
     ) -> None:
         self.symbol = symbol
         self.risk_pct = float(risk_pct)
@@ -50,6 +51,11 @@ class DemoExecutor:
         self.max_total_open_risk_pct = (
             float(max_total_open_risk_pct)
             if max_total_open_risk_pct is not None
+            else None
+        )
+        self.max_concurrent_positions = (
+            int(max_concurrent_positions)
+            if max_concurrent_positions is not None
             else None
         )
 
@@ -288,6 +294,20 @@ class DemoExecutor:
 
     def send(self, signal: StrategySignal) -> DemoOrderResult:
         self.assert_trading_account()
+
+        if self.max_concurrent_positions is not None:
+            open_bot_positions = [
+                p for p in (mt5.positions_get() or ())
+                if int(getattr(p, "magic", -1)) == self.magic
+            ]
+            if len(open_bot_positions) >= self.max_concurrent_positions:
+                return DemoOrderResult(
+                    False, signal.strategy_id, signal.direction, 0.0, 0.0,
+                    signal.stop_loss, signal.take_profit, None, None,
+                    f"SKIPPED_MAX_POSITIONS: {len(open_bot_positions)} GOLD_AI positions "
+                    f"already open; cap is {self.max_concurrent_positions}.",
+                )
+
         price = self._current_price(signal.direction)
 
         if not self._valid_geometry(signal, price):
