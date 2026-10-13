@@ -25,6 +25,7 @@ from config import (
     MAX_TOTAL_OPEN_RISK_PCT,
     SMALL_ACCOUNT_MAX_RISK_PCT,
     MAX_CONCURRENT_POSITIONS,
+    STACK_PROFIT_LOCK_PIPS,
     M15_TRAILING_ENABLED,
     M15_TRAIL_ACTIVATE_R,
     M15_TRAIL_SWING_SPAN,
@@ -555,7 +556,11 @@ def main() -> None:
             f"SMALL ACCOUNT : minimum-lot adaptation capped at "
             f"{SMALL_ACCOUNT_MAX_RISK_PCT}% risk/trade"
         )
-        print(f"MAX POSITIONS : {MAX_CONCURRENT_POSITIONS}")
+        print(
+            "MAX POSITIONS : "
+            + (str(MAX_CONCURRENT_POSITIONS) if MAX_CONCURRENT_POSITIONS is not None else "DISABLED")
+        )
+        print(f"STACK PROTECT : older same-side trades lock +{STACK_PROFIT_LOCK_PIPS:g} pips")
         print(
             "M15 TRAILING  : "
             + (
@@ -568,7 +573,14 @@ def main() -> None:
             f"AI MODE       : SHADOW / GROQ {ai_shadow.model} / "
             + ("CONFIGURED" if ai_shadow.api_key else "KEY MISSING")
         )
-        print(f"CONCURRENCY   : MAX {MAX_CONCURRENT_POSITIONS} GOLD_AI positions")
+        print(
+            "CONCURRENCY   : RISK-BASED"
+            + (
+                f" + MAX {MAX_CONCURRENT_POSITIONS} positions"
+                if MAX_CONCURRENT_POSITIONS is not None
+                else " (no hard position-count cap)"
+            )
+        )
         print("OPPOSITE SIDE : ALLOWED IF THE MT5 ACCOUNT SUPPORTS HEDGING")
         print(f"POLLING       : every {DEMO_POLL_SECONDS}s")
         print(f"TELEGRAM      : {'ENABLED' if telegram.configured else 'DISABLED - env vars missing'}")
@@ -589,7 +601,12 @@ def main() -> None:
                     if MAX_TOTAL_OPEN_RISK_PCT is not None
                     else "DISABLED\n"
                 )
-                + f"Max open positions: {MAX_CONCURRENT_POSITIONS}\n"
+                + (
+                    f"Max open positions: {MAX_CONCURRENT_POSITIONS}\n"
+                    if MAX_CONCURRENT_POSITIONS is not None
+                    else "Max open positions: DISABLED (risk-based stacking)\n"
+                )
+                + f"Older-position lock: +{STACK_PROFIT_LOCK_PIPS:g} pips\n"
                 + f"Strategies: {strategy_text}\n"
                 f"Open GOLD_AI positions: {len(previous_positions)}\n\n"
                 "Commands: /status • /positions • /pause"
@@ -703,6 +720,31 @@ def main() -> None:
                                 )
                                 if result.ticket and message_id:
                                     telegram_trade_messages[int(result.ticket)] = int(message_id)
+
+                                # A fresh same-direction entry confirms that the move
+                                # is still producing valid setups. Protect older
+                                # profitable positions in the stack so accumulated
+                                # open risk cannot remain unnecessarily large.
+                                for stack_trail in trailing.protect_older_positions(
+                                    client.symbol,
+                                    signal.direction,
+                                    STACK_PROFIT_LOCK_PIPS,
+                                ):
+                                    if stack_trail.changed:
+                                        stack_text = (
+                                            "🛡 STACK PROFIT LOCK\n"
+                                            f"Ticket #{stack_trail.ticket}\n"
+                                            f"SL: {_fmt_price(stack_trail.old_sl)} → "
+                                            f"{_fmt_price(stack_trail.new_sl)}\n"
+                                            f"Locked zone: +{STACK_PROFIT_LOCK_PIPS:g} pips"
+                                        )
+                                        print(
+                                            f"[{datetime.now().strftime('%H:%M:%S')}] STACK LOCK "
+                                            f"ticket={stack_trail.ticket} "
+                                            f"SL={stack_trail.old_sl} -> {stack_trail.new_sl}"
+                                        )
+                                        if telegram.configured:
+                                            telegram.notify(stack_text)
                             elif telegram.configured:
                                 telegram.notify(
                                     "⚠️ ORDER NOT OPENED\n"
