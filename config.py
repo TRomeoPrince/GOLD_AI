@@ -53,7 +53,7 @@ if not 0.1 <= DEMO_RISK_PCT <= 2.0:
 # broker minimum volume, the bot may use the broker minimum lot only when the
 # resulting stop-loss risk stays below this hard percentage ceiling.
 SMALL_ACCOUNT_MAX_RISK_PCT = float(
-    os.getenv("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT", str(DEMO_RISK_PCT))
+    os.getenv("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT", "10.0")
 )
 if not 0 < SMALL_ACCOUNT_MAX_RISK_PCT <= 100:
     raise ValueError("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT must be > 0 and <= 100.")
@@ -62,9 +62,11 @@ DEMO_POLL_SECONDS = 5
 DEMO_MAX_SIGNAL_AGE_MINUTES = 20
 DEMO_MAGIC = 560090
 
-# Portfolio guardrails restored for live safety.
-# Default: no more than 2.7% total planned loss across all open GOLD_AI trades.
-_raw_open_risk_cap = os.getenv("GOLD_AI_MAX_OPEN_RISK_PCT", "2.7").strip()
+# Small-account live guardrail.
+# Normal sizing still targets 0.9% per trade. If the broker minimum lot forces
+# a larger position, one trade may use up to 10% effective risk, while total
+# planned loss across all open GOLD_AI positions is capped at 20% of equity.
+_raw_open_risk_cap = os.getenv("GOLD_AI_MAX_OPEN_RISK_PCT", "20.0").strip()
 MAX_TOTAL_OPEN_RISK_PCT = float(_raw_open_risk_cap) if _raw_open_risk_cap else None
 if MAX_TOTAL_OPEN_RISK_PCT is not None and MAX_TOTAL_OPEN_RISK_PCT <= 0:
     raise ValueError("GOLD_AI_MAX_OPEN_RISK_PCT must be positive when enabled.")
