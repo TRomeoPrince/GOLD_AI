@@ -53,7 +53,7 @@ if not 0.1 <= DEMO_RISK_PCT <= 2.0:
 # broker minimum volume, the bot may use the broker minimum lot only when the
 # resulting stop-loss risk stays below this hard percentage ceiling.
 SMALL_ACCOUNT_MAX_RISK_PCT = float(
-    os.getenv("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT", "40.0")
+    os.getenv("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT", str(DEMO_RISK_PCT))
 )
 if not 0 < SMALL_ACCOUNT_MAX_RISK_PCT <= 100:
     raise ValueError("GOLD_AI_SMALL_ACCOUNT_MAX_RISK_PCT must be > 0 and <= 100.")
@@ -62,12 +62,18 @@ DEMO_POLL_SECONDS = 5
 DEMO_MAX_SIGNAL_AGE_MINUTES = 20
 DEMO_MAGIC = 560090
 
-# Portfolio open-risk cap is disabled by default for the current live test.
-# Set GOLD_AI_MAX_OPEN_RISK_PCT to a positive percentage to re-enable it.
-_raw_open_risk_cap = os.getenv("GOLD_AI_MAX_OPEN_RISK_PCT", "").strip()
+# Portfolio guardrails restored for live safety.
+# Default: no more than 2.7% total planned loss across all open GOLD_AI trades.
+_raw_open_risk_cap = os.getenv("GOLD_AI_MAX_OPEN_RISK_PCT", "2.7").strip()
 MAX_TOTAL_OPEN_RISK_PCT = float(_raw_open_risk_cap) if _raw_open_risk_cap else None
 if MAX_TOTAL_OPEN_RISK_PCT is not None and MAX_TOTAL_OPEN_RISK_PCT <= 0:
     raise ValueError("GOLD_AI_MAX_OPEN_RISK_PCT must be positive when enabled.")
+
+# Hard concurrency guard. Even if several strategies fire together, the bot
+# will not stack more than this many GOLD_AI positions at once.
+MAX_CONCURRENT_POSITIONS = int(os.getenv("GOLD_AI_MAX_CONCURRENT_POSITIONS", "2"))
+if MAX_CONCURRENT_POSITIONS < 1:
+    raise ValueError("GOLD_AI_MAX_CONCURRENT_POSITIONS must be at least 1.")
 
 # Research experiments only: not enabled unless explicitly changed.
 DAILY_LOSS_CAP_PCT = None
