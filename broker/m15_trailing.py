@@ -157,6 +157,78 @@ class M15StructureTrailingManager:
             str(getattr(result, "comment", "")),
         )
 
+    @staticmethod
+    def _pip_size(symbol: str) -> float:
+        info = mt5.symbol_info(symbol)
+        if info is None:
+            raise RuntimeError(f"Symbol info unavailable for {symbol}.")
+        point = float(info.point)
+        digits = int(info.digits)
+        # Standard FX convention: 5/3-digit quotes use 10 points per pip.
+        # Gold and other 2-digit symbols use one point per pip.
+        return point * 10.0 if digits in (3, 5) else point
+
+    def protect_older_positions(
+        self,
+        symbol: str,
+        direction: str,
+        profit_lock_pips: float,
+    ) -> list[TrailResult]:
+        """Lock older same-direction GOLD_AI positions into a small profit.
+
+        Called immediately after a fresh position is opened. The newest
+        position keeps its strategy SL; every older same-side position is
+        considered for an SL at entry +/- profit_lock_pips. Stops only move
+        forward, never backward, and are changed only when broker distance
+        rules and current price make the protected stop valid.
+        """
+        positions = [
+            p for p in (mt5.positions_get(symbol=symbol) or ())
+            if int(getattr(p, "magic", -1)) == self.magic
+            and self._position_side(p) == direction
+        ]
+        if len(positions) < 2:
+            return []
+
+        positions.sort(
+            key=lambda p: (
+                int(getattr(p, "time_msc", 0) or 0),
+                int(getattr(p, "time", 0) or 0),
+                int(getattr(p, "ticket", 0) or 0),
+            )
+        )
+        newest = positions[-1]
+        pip = self._pip_size(symbol)
+        info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if info is None or tick is None:
+            return []
+
+        min_stop_distance = float(getattr(info, "trade_stops_level", 0) or 0) * float(info.point)
+        results: list[TrailResult] = []
+
+        for p in positions[:-1]:
+            entry = float(p.price_open)
+            old_sl = float(p.sl)
+            if direction == "BUY":
+                target = entry + float(profit_lock_pips) * pip
+                market_exit = float(tick.bid)
+                if market_exit <= target + min_stop_distance:
+                    continue
+                if old_sl > 0 and target <= old_sl:
+                    continue
+            else:
+                target = entry - float(profit_lock_pips) * pip
+                market_exit = float(tick.ask)
+                if market_exit >= target - min_stop_distance:
+                    continue
+                if old_sl > 0 and target >= old_sl:
+                    continue
+
+            results.append(self._modify_sl(p, target))
+
+        return results
+
     def update_all(self) -> list[TrailResult]:
         positions = mt5.positions_get() or ()
         results: list[TrailResult] = []
