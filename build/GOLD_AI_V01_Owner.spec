@@ -14,8 +14,8 @@ binaries = []
 binaries += collect_dynamic_libs("MetaTrader5")
 
 a = Analysis(
-    ["demo_bot.py"],
-    pathex=["."],
+    ["../demo_bot.py"],
+    pathex=[".."],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
