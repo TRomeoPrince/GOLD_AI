@@ -1,11 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
+PROJECT_ROOT = str(Path(SPECPATH).resolve().parent)
+ENTRYPOINT = str(Path(PROJECT_ROOT) / "server" / "admin_gui.py")
+
 a = Analysis(
-    ["../server/admin_gui.py"],
-    pathex=[".."],
+    [ENTRYPOINT],
+    pathex=[PROJECT_ROOT],
     binaries=[],
     datas=[],
-    hiddenimports=["server.store"],
+    hiddenimports=["server", "server.store"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
