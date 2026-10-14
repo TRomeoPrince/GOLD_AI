@@ -10,3 +10,6 @@ data/*.db
 # Owner-only licensing secrets
 GOLD_AI_OWNER_PRIVATE_KEY.pem
 license.gold
+
+# Local owner server state
+server/*.db
