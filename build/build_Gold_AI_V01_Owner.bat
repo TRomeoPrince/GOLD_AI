@@ -24,7 +24,11 @@ if exist build\pyi rmdir /s /q build\pyi
 if exist dist\Gold_AI_V01_Owner.exe del /q dist\Gold_AI_V01_Owner.exe
 
 echo [4/5] Compiling Gold_AI_V01_Owner.exe...
-".venv\Scripts\python.exe" -m PyInstaller --clean --noconfirm --distpath dist --workpath build\pyi build\GOLD_AI_V01_Owner.spec
+pushd build
+"..\.venv\Scripts\python.exe" -m PyInstaller --clean --noconfirm --distpath "..\dist" --workpath "pyi" GOLD_AI_V01_Owner.spec
+set BUILD_RC=%ERRORLEVEL%
+popd
+if not "%BUILD_RC%"=="0" goto :fail
 if errorlevel 1 goto :fail
 
 echo [5/5] Build complete.
