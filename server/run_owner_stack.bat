@@ -1,0 +1,10 @@
+@echo off
+setlocal
+cd /d "%~dp0\.."
+
+start "GOLD_AI API" cmd /k ".venv\Scripts\python -m uvicorn server.app:app --host 127.0.0.1 --port 8765"
+timeout /t 2 /nobreak >nul
+start "GOLD_AI SIGNAL ENGINE" cmd /k ".venv\Scripts\python -m server.signal_engine"
+
+echo GOLD_AI owner server + signal engine started.
+echo Keep your Cloudflare tunnel running separately.
