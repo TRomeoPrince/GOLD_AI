@@ -30,6 +30,19 @@ class ClientStatusResponse(BaseModel):
     status: str
 
 
+class MobileOverviewResponse(BaseModel):
+    allowed: bool
+    display_name: str
+    status: str
+    mt5_login: Optional[int] = None
+    mt5_server: str = ""
+    telegram_username: str = ""
+    risk_per_trade_pct: float
+    max_open_risk_pct: float
+    max_daily_loss_pct: float
+    news_lock: bool
+
+
 class TradeInstructionResponse(BaseModel):
     available: bool
     instruction_id: int = 0
