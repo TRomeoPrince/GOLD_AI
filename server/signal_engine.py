@@ -11,7 +11,7 @@ from broker.mt5_client import MT5Client
 from config import ACTIVE_MARKETS, DEMO_MAX_SIGNAL_AGE_MINUTES, DEMO_POLL_SECONDS, M5_BARS
 from strategies import StrategyRegistry
 
-from .store import active_clients, enqueue_instruction
+from .store import active_clients, enqueue_instruction, news_lock_enabled
 
 
 def _setup_epoch(signal) -> float:
@@ -44,6 +44,11 @@ def main() -> None:
     print("Ctrl+C to stop.")
 
     while True:
+        if news_lock_enabled():
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] NEWS LOCK active — new entries blocked.")
+            time.sleep(DEMO_POLL_SECONDS)
+            continue
+
         now = datetime.now(timezone.utc).timestamp()
         for market, client in clients.items():
             candles = client.candles(mt5.TIMEFRAME_M5, M5_BARS)
