@@ -28,3 +28,16 @@ class ClientStatusResponse(BaseModel):
     allowed: bool
     display_name: str
     status: str
+
+
+class TradeInstructionResponse(BaseModel):
+    available: bool
+    instruction_id: int = 0
+    signal_key: str = ""
+    payload: dict = {}
+
+
+class TradeAckRequest(BaseModel):
+    instruction_id: int
+    status: str
+    message: str = ""
