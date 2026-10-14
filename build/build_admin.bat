@@ -11,6 +11,8 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
+taskkill /F /IM GOLD_AI_Admin.exe >nul 2>&1
+
 ".venv\Scripts\python.exe" -m pip install --upgrade pyinstaller
 if errorlevel 1 exit /b 1
 
