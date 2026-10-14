@@ -203,3 +203,12 @@ def acknowledge_instruction(client_id: int, instruction_id: int, status: str, me
             (status.upper(), message[:1000], now, int(instruction_id), int(client_id)),
         )
         return cur.rowcount > 0
+
+
+def client_by_name(name: str) -> ClientRecord | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM clients WHERE name=?",
+            (name.strip(),),
+        ).fetchone()
+    return ClientRecord(**dict(row)) if row else None
