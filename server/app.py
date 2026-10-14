@@ -122,7 +122,10 @@ def get_next_instruction(authorization: str = Header(default="")) -> TradeInstru
     if client is None:
         raise HTTPException(status_code=401, detail="Invalid session.")
     if client.status != "ACTIVE":
-        return TradeInstructionResponse(available=False)
+        raise HTTPException(
+            status_code=403,
+            detail=f"Client access is {client.status}.",
+        )
 
     row = next_instruction(client.id)
     if row is None:
