@@ -49,6 +49,22 @@ def connect() -> sqlite3.Connection:
         )
         """
     )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS instructions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            signal_key TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            ack_message TEXT NOT NULL DEFAULT '',
+            created_utc TEXT NOT NULL,
+            acked_utc TEXT NOT NULL DEFAULT '',
+            UNIQUE(client_id, signal_key),
+            FOREIGN KEY(client_id) REFERENCES clients(id)
+        )
+        """
+    )
     con.commit()
     return con
 
@@ -136,3 +152,54 @@ def client_for_token(token: str) -> ClientRecord | None:
             (token,),
         ).fetchone()
     return ClientRecord(**dict(row)) if row else None
+
+
+def active_clients() -> list[ClientRecord]:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT * FROM clients WHERE status='ACTIVE' ORDER BY id"
+        ).fetchall()
+    return [ClientRecord(**dict(row)) for row in rows]
+
+
+def enqueue_instruction(client_id: int, signal_key: str, payload_json: str) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as con:
+        try:
+            con.execute(
+                """
+                INSERT INTO instructions(client_id,signal_key,payload_json,status,created_utc)
+                VALUES(?,?,?,?,?)
+                """,
+                (client_id, signal_key, payload_json, "PENDING", now),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+
+def next_instruction(client_id: int):
+    with connect() as con:
+        return con.execute(
+            """
+            SELECT * FROM instructions
+            WHERE client_id=? AND status='PENDING'
+            ORDER BY id ASC
+            LIMIT 1
+            """,
+            (client_id,),
+        ).fetchone()
+
+
+def acknowledge_instruction(client_id: int, instruction_id: int, status: str, message: str) -> bool:
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as con:
+        cur = con.execute(
+            """
+            UPDATE instructions
+            SET status=?, ack_message=?, acked_utc=?
+            WHERE id=? AND client_id=? AND status='PENDING'
+            """,
+            (status.upper(), message[:1000], now, int(instruction_id), int(client_id)),
+        )
+        return cur.rowcount > 0
