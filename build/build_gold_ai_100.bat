@@ -1,0 +1,47 @@
+@echo off
+setlocal
+cd /d "%~dp0\.."
+
+echo ==========================================
+echo   GOLD_AI - OWNER $100 EDITION BUILDER
+echo ==========================================
+echo.
+
+if not exist ".venv\Scripts\python.exe" (
+    echo [1/5] Creating virtual environment...
+    py -m venv .venv
+    if errorlevel 1 goto :fail
+)
+
+echo [2/5] Installing/updating build dependencies...
+".venv\Scripts\python.exe" -m pip install --upgrade pip
+if errorlevel 1 goto :fail
+".venv\Scripts\python.exe" -m pip install -r requirements-build.txt
+if errorlevel 1 goto :fail
+
+echo [3/5] Cleaning previous build...
+if exist build\pyi rmdir /s /q build\pyi
+if exist dist\GOLD_AI_100_OWNER.exe del /q dist\GOLD_AI_100_OWNER.exe
+
+echo [4/5] Compiling GOLD_AI_100_OWNER.exe...
+".venv\Scripts\python.exe" -m PyInstaller --clean --noconfirm --distpath dist --workpath build\pyi build\GOLD_AI_100.spec
+if errorlevel 1 goto :fail
+
+echo [5/5] Build complete.
+echo.
+echo EXE:
+echo %CD%\dist\GOLD_AI_100_OWNER.exe
+echo.
+echo IMPORTANT:
+echo - Keep MT5 installed and logged in.
+echo - Keep your .env beside the EXE or run with the same environment variables.
+echo - API keys and Telegram tokens are NOT compiled into the executable.
+echo.
+pause
+exit /b 0
+
+:fail
+echo.
+echo BUILD FAILED.
+pause
+exit /b 1
