@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import MetaTrader5 as mt5
 from dotenv import load_dotenv
@@ -234,73 +235,97 @@ def _mini_journal_text(selected_date: str | None = None) -> str:
     current_balance = float(account.balance)
     current_equity = float(account.equity)
 
+    # Journal day boundaries follow Uganda time, not the PC/MT5 display timezone.
+    journal_tz = ZoneInfo(os.getenv("GOLD_AI_JOURNAL_TIMEZONE", "Africa/Kampala"))
+    now_local = datetime.now(journal_tz)
+
     try:
         period_date = (
             datetime.strptime(selected_date, "%Y-%m-%d").date()
             if selected_date
-            else datetime.now().date()
+            else now_local.date()
         )
     except ValueError:
         return (
             "📒 GOLD_AI — MINI JOURNAL\n\n"
             "Invalid date. Use /journal YYYY-MM-DD\n"
-            "Example: /journal 2026-10-12"
+            "Example: /journal 2026-10-14"
         )
 
-    if period_date > datetime.now().date():
+    if period_date > now_local.date():
         return "📒 GOLD_AI — MINI JOURNAL\n\nSelected date cannot be in the future."
 
-    now_utc = datetime.now(timezone.utc)
+    # Ask MT5 for the full deal history once. MT5 deal timestamps are Unix
+    # timestamps, so convert them explicitly from UTC into the journal timezone.
     deals = mt5.history_deals_get(
-        datetime(2000, 1, 1, tzinfo=timezone.utc),
-        now_utc,
+        datetime(2000, 1, 1),
+        datetime.now(),
     ) or ()
 
-    grouped: dict[int, list[object]] = {}
+    def local_date(deal: object):
+        ts = int(getattr(deal, "time", 0) or 0)
+        if ts <= 0:
+            return None
+        return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(journal_tz).date()
+
+    def deal_cash_effect(deal: object) -> float:
+        return (
+            float(getattr(deal, "profit", 0.0))
+            + float(getattr(deal, "commission", 0.0))
+            + float(getattr(deal, "swap", 0.0))
+            + float(getattr(deal, "fee", 0.0))
+        )
+
+    # First identify GOLD_AI position IDs from ANY tagged deal. Closing deals
+    # can lose the original EA comment/magic, so after identifying a position,
+    # include every deal sharing that position_id.
+    bot_position_ids: set[int] = set()
+    strategy_by_position: dict[int, str] = {}
     for deal in deals:
         position_id = int(getattr(deal, "position_id", 0) or 0)
         if position_id <= 0:
             continue
         comment = str(getattr(deal, "comment", "") or "")
         magic = int(getattr(deal, "magic", -1))
-        if magic != DEMO_MAGIC and not comment.startswith("GOLD_AI:"):
-            continue
-        grouped.setdefault(position_id, []).append(deal)
+        if magic == DEMO_MAGIC or comment.startswith("GOLD_AI:"):
+            bot_position_ids.add(position_id)
+            if comment.startswith("GOLD_AI:"):
+                strategy_by_position[position_id] = (
+                    comment.split(":", 1)[1] or "UNKNOWN"
+                )
+
+    grouped: dict[int, list[object]] = {}
+    for deal in deals:
+        position_id = int(getattr(deal, "position_id", 0) or 0)
+        if position_id in bot_position_ids:
+            grouped.setdefault(position_id, []).append(deal)
 
     closed_rows: list[dict] = []
+    exit_values = {
+        int(getattr(mt5, "DEAL_ENTRY_OUT", 1)),
+        int(getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)),
+    }
+
     for position_id, position_deals in grouped.items():
         exit_deals = [
             deal for deal in position_deals
-            if int(getattr(deal, "entry", -1)) in {
-                int(getattr(mt5, "DEAL_ENTRY_OUT", 1)),
-                int(getattr(mt5, "DEAL_ENTRY_OUT_BY", 3)),
-            }
+            if int(getattr(deal, "entry", -1)) in exit_values
         ]
         if not exit_deals:
             continue
 
-        pnl = sum(
-            float(getattr(deal, "profit", 0.0))
-            + float(getattr(deal, "commission", 0.0))
-            + float(getattr(deal, "swap", 0.0))
-            + float(getattr(deal, "fee", 0.0))
-            for deal in position_deals
+        pnl = sum(deal_cash_effect(deal) for deal in position_deals)
+        close_deal = max(
+            exit_deals,
+            key=lambda deal: int(getattr(deal, "time_msc", 0) or 0)
+                or int(getattr(deal, "time", 0) or 0),
         )
-
-        strategy = "UNKNOWN"
-        for deal in position_deals:
-            comment = str(getattr(deal, "comment", "") or "")
-            if comment.startswith("GOLD_AI:"):
-                strategy = comment.split(":", 1)[1] or "UNKNOWN"
-                break
-
-        close_time = max(int(getattr(deal, "time", 0) or 0) for deal in exit_deals)
-        close_local_date = datetime.fromtimestamp(close_time).date() if close_time else None
+        close_date = local_date(close_deal)
         closed_rows.append({
             "position_id": position_id,
             "pnl": pnl,
-            "strategy": strategy,
-            "date": close_local_date,
+            "strategy": strategy_by_position.get(position_id, "UNKNOWN"),
+            "date": close_date,
         })
 
     def stats(rows: list[dict]) -> tuple[int, int, int, float, float]:
@@ -310,7 +335,9 @@ def _mini_journal_text(selected_date: str | None = None) -> str:
         net = sum(float(row["pnl"]) for row in rows)
         gross_profit = sum(float(row["pnl"]) for row in rows if row["pnl"] > 0)
         gross_loss = abs(sum(float(row["pnl"]) for row in rows if row["pnl"] < 0))
-        pf = gross_profit / gross_loss if gross_loss > 0 else (float("inf") if gross_profit > 0 else 0.0)
+        pf = gross_profit / gross_loss if gross_loss > 0 else (
+            float("inf") if gross_profit > 0 else 0.0
+        )
         return trades, wins, losses, net, pf
 
     period_rows = [row for row in closed_rows if row["date"] == period_date]
@@ -322,27 +349,25 @@ def _mini_journal_text(selected_date: str | None = None) -> str:
     period_pf_text = "∞" if p_pf == float("inf") else f"{p_pf:.2f}"
     all_pf_text = "∞" if a_pf == float("inf") else f"{a_pf:.2f}"
 
-    # Reconstruct account balance at the start of the selected local date by
-    # removing every balance-impacting deal from that date onward from the
-    # current balance. This includes manual trades/deposits/withdrawals too,
-    # so the denominator is the real account starting balance for that date.
-    start_of_period = datetime.combine(period_date, datetime.min.time())
-    balance_change_since_start = 0.0
-    for deal in deals:
-        deal_time = int(getattr(deal, "time", 0) or 0)
-        if deal_time <= 0:
-            continue
-        if datetime.fromtimestamp(deal_time) < start_of_period:
-            continue
-        balance_change_since_start += (
-            float(getattr(deal, "profit", 0.0))
-            + float(getattr(deal, "commission", 0.0))
-            + float(getattr(deal, "swap", 0.0))
-            + float(getattr(deal, "fee", 0.0))
-        )
-
+    # Real account balance at 00:00 Uganda time for the selected date.
+    # Current balance minus every balance-changing deal from that local date
+    # onward reconstructs the actual start-of-day account balance.
+    balance_change_since_start = sum(
+        deal_cash_effect(deal)
+        for deal in deals
+        if local_date(deal) is not None and local_date(deal) >= period_date
+    )
     starting_balance = current_balance - balance_change_since_start
-    roi_pct = (100.0 * p_net / starting_balance) if starting_balance > 0 else 0.0
+
+    bot_roi_pct = (100.0 * p_net / starting_balance) if starting_balance > 0 else 0.0
+    account_balance_return_pct = (
+        100.0 * (current_balance - starting_balance) / starting_balance
+        if starting_balance > 0 else 0.0
+    )
+    account_equity_return_pct = (
+        100.0 * (current_equity - starting_balance) / starting_balance
+        if starting_balance > 0 else 0.0
+    )
 
     open_positions = _bot_positions()
     floating = sum(float(getattr(p, "profit", 0.0)) for p in open_positions.values())
@@ -354,27 +379,30 @@ def _mini_journal_text(selected_date: str | None = None) -> str:
         strategy_totals[strategy] = strategy_totals.get(strategy, 0.0) + float(row["pnl"])
         strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
 
-    label = "TODAY" if period_date == datetime.now().date() else period_date.isoformat()
+    label = "TODAY" if period_date == now_local.date() else period_date.isoformat()
     lines = [
         "📒 GOLD_AI — MINI JOURNAL",
         "",
-        label,
+        f"{label} • {journal_tz.key}",
         f"Starting balance: {_fmt_money(starting_balance, currency).lstrip('+')}",
         f"Current balance:  {_fmt_money(current_balance, currency).lstrip('+')}",
         f"Current equity:   {_fmt_money(current_equity, currency).lstrip('+')}",
-        f"ROI: {roi_pct:+.2f}%",
+        f"Bot ROI: {bot_roi_pct:+.2f}%",
+        f"Account balance return: {account_balance_return_pct:+.2f}%",
+        f"Account equity return:  {account_equity_return_pct:+.2f}%",
         "",
-        f"Trades: {p_trades} | W: {p_wins} | L: {p_losses} | WR: {period_wr:.1f}%",
-        f"Net P/L: {_fmt_money(p_net, currency)}",
+        f"Closed bot trades: {p_trades} | W: {p_wins} | L: {p_losses} | WR: {period_wr:.1f}%",
+        f"Bot closed P/L: {_fmt_money(p_net, currency)}",
         f"Profit Factor: {period_pf_text}",
         "",
-        "ALL TIME",
+        "ALL TIME — GOLD_AI",
         f"Trades: {a_trades} | W: {a_wins} | L: {a_losses} | WR: {all_wr:.1f}%",
         f"Net P/L: {_fmt_money(a_net, currency)}",
         f"Profit Factor: {all_pf_text}",
         "",
-        f"Open positions: {len(open_positions)}",
-        f"Floating P/L: {_fmt_money(floating, currency)}",
+        f"Open GOLD_AI positions: {len(open_positions)}",
+        f"Floating bot P/L: {_fmt_money(floating, currency)}",
+        f"Bot P/L incl. floating today: {_fmt_money(p_net + floating, currency)}",
     ]
 
     if strategy_totals:
