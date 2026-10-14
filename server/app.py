@@ -6,6 +6,7 @@ from .models import (
     AuthorizeRequest,
     AuthorizeResponse,
     ClientStatusResponse,
+    MobileOverviewResponse,
     TelegramRequest,
     TradeInstructionResponse,
     TradeAckRequest,
@@ -17,9 +18,18 @@ from .store import (
     find_by_pairing_code,
     next_instruction,
     acknowledge_instruction,
+    news_lock_enabled,
 )
 
-app = FastAPI(title="GOLD_AI Owner Server", version="0.1.0")
+app = FastAPI(title="GOLD_AI Owner Server", version="0.2.0")
+
+
+def _client_from_authorization(authorization: str):
+    token = authorization.removeprefix("Bearer ").strip()
+    client = client_for_token(token)
+    if client is None:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    return client
 
 
 @app.get("/health")
@@ -37,7 +47,6 @@ def authorize(req: AuthorizeRequest) -> AuthorizeResponse:
             message="Invalid pairing code.",
         )
 
-    # First successful pairing can bind the customer's MT5 account.
     if client.mt5_login is None and req.mt5_login is not None:
         client = bind_client(
             client.id,
@@ -46,7 +55,6 @@ def authorize(req: AuthorizeRequest) -> AuthorizeResponse:
             req.telegram_username,
         )
     else:
-        # Once bound, a different MT5 login/server is not silently accepted.
         if (
             client.mt5_login is not None
             and req.mt5_login is not None
@@ -70,6 +78,14 @@ def authorize(req: AuthorizeRequest) -> AuthorizeResponse:
                 message="This GOLD_AI access is bound to another MT5 server.",
             )
 
+    if req.telegram_username.strip():
+        client = bind_client(
+            client.id,
+            client.mt5_login,
+            client.mt5_server,
+            req.telegram_username,
+        )
+
     allowed = client.status == "ACTIVE"
     token = create_session(client.id) if allowed else ""
     return AuthorizeResponse(
@@ -83,14 +99,28 @@ def authorize(req: AuthorizeRequest) -> AuthorizeResponse:
 
 @app.get("/v1/client/status", response_model=ClientStatusResponse)
 def client_status(authorization: str = Header(default="")) -> ClientStatusResponse:
-    token = authorization.removeprefix("Bearer ").strip()
-    client = client_for_token(token)
-    if client is None:
-        raise HTTPException(status_code=401, detail="Invalid session.")
+    client = _client_from_authorization(authorization)
     return ClientStatusResponse(
         allowed=client.status == "ACTIVE",
         display_name=client.name,
         status=client.status,
+    )
+
+
+@app.get("/v1/mobile/overview", response_model=MobileOverviewResponse)
+def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewResponse:
+    client = _client_from_authorization(authorization)
+    return MobileOverviewResponse(
+        allowed=client.status == "ACTIVE",
+        display_name=client.name,
+        status=client.status,
+        mt5_login=client.mt5_login,
+        mt5_server=client.mt5_server,
+        telegram_username=client.telegram_username,
+        risk_per_trade_pct=client.risk_per_trade_pct,
+        max_open_risk_pct=client.max_open_risk_pct,
+        max_daily_loss_pct=client.max_daily_loss_pct,
+        news_lock=news_lock_enabled(),
     )
 
 
@@ -117,10 +147,7 @@ def telegram(req: TelegramRequest) -> dict:
 
 @app.get("/v1/instructions/next", response_model=TradeInstructionResponse)
 def get_next_instruction(authorization: str = Header(default="")) -> TradeInstructionResponse:
-    token = authorization.removeprefix("Bearer ").strip()
-    client = client_for_token(token)
-    if client is None:
-        raise HTTPException(status_code=401, detail="Invalid session.")
+    client = _client_from_authorization(authorization)
     if client.status != "ACTIVE":
         raise HTTPException(
             status_code=403,
@@ -142,10 +169,7 @@ def get_next_instruction(authorization: str = Header(default="")) -> TradeInstru
 
 @app.post("/v1/instructions/ack")
 def ack_instruction(req: TradeAckRequest, authorization: str = Header(default="")) -> dict:
-    token = authorization.removeprefix("Bearer ").strip()
-    client = client_for_token(token)
-    if client is None:
-        raise HTTPException(status_code=401, detail="Invalid session.")
+    client = _client_from_authorization(authorization)
 
     ok = acknowledge_instruction(client.id, req.instruction_id, req.status, req.message)
     if not ok:
