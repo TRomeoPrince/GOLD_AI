@@ -31,6 +31,7 @@ popd
 if not "%BUILD_RC%"=="0" goto :fail
 if errorlevel 1 goto :fail
 
+copy /Y "build\GOLD_AI_V01_Owner.env.example" "dist\GOLD_AI_V01_Owner.env.example" >nul
 echo [5/5] Build complete.
 echo.
 echo EXE:
