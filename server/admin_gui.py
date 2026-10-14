@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from .store import (
+from server.store import (
     create_client,
     list_clients,
     news_lock_enabled,
