@@ -19,6 +19,7 @@ from broker.m15_trailing import M15StructureTrailingManager
 from broker.mt5_client import MT5Client
 from config import (
     ACTIVE_MARKETS,
+    AI_MODE,
     DEMO_MAGIC,
     DEMO_MAX_SIGNAL_AGE_MINUTES,
     DEMO_POLL_SECONDS,
@@ -477,8 +478,12 @@ def main() -> None:
     tg_admin_raw = os.getenv("TELEGRAM_ADMIN_ID", "").strip()
     tg_admin = int(tg_admin_raw) if tg_admin_raw.isdigit() else 0
     telegram = TelegramController(tg_token, tg_admin)
-    ai_shadow = AIShadowEvaluator(REPORTS_DIR)
-    ai_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gold-ai-shadow")
+    ai_shadow = AIShadowEvaluator(REPORTS_DIR) if AI_MODE == "SHADOW" else None
+    ai_pool = (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="gold-ai-shadow")
+        if ai_shadow is not None
+        else None
+    )
 
     clients: dict[str, MT5Client] = {}
 
@@ -610,10 +615,13 @@ def main() -> None:
                 if M15_TRAILING_ENABLED else "OFF"
             )
         )
-        print(
-            f"AI MODE       : SHADOW / GROQ {ai_shadow.model} / "
-            + ("CONFIGURED" if ai_shadow.api_key else "KEY MISSING")
-        )
+        if ai_shadow is not None:
+            print(
+                f"AI MODE       : SHADOW / GROQ {ai_shadow.model} / "
+                + ("CONFIGURED" if ai_shadow.api_key else "KEY MISSING")
+            )
+        else:
+            print("AI MODE       : OFF")
         print(
             "CONCURRENCY   : RISK-BASED"
             + (
@@ -701,14 +709,15 @@ def main() -> None:
                             recent_context = candles.iloc[-13:-1][
                                 ["time", "open", "high", "low", "close"]
                             ].to_dict("records")
-                            ai_payload = {
-                                "market": market,
-                                "symbol": client.symbol,
-                                "signal": asdict(signal),
-                                "execution_result": asdict(result),
-                                "recent_m5": recent_context,
-                            }
-                            ai_pool.submit(ai_shadow.evaluate_and_log, ai_payload)
+                            if ai_shadow is not None and ai_pool is not None:
+                                ai_payload = {
+                                    "market": market,
+                                    "symbol": client.symbol,
+                                    "signal": asdict(signal),
+                                    "execution_result": asdict(result),
+                                    "recent_m5": recent_context,
+                                }
+                                ai_pool.submit(ai_shadow.evaluate_and_log, ai_payload)
 
                             label = "SENT" if result.sent else "SKIPPED"
                             print(
@@ -860,7 +869,8 @@ def main() -> None:
                 "The runtime has stopped. This command/process does not close existing MT5 positions."
             )
         telegram.stop()
-        ai_pool.shutdown(wait=False, cancel_futures=True)
+        if ai_pool is not None:
+            ai_pool.shutdown(wait=False, cancel_futures=True)
         MT5Client.shutdown()
 
 
