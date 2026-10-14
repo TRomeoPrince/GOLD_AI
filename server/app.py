@@ -7,12 +7,16 @@ from .models import (
     AuthorizeResponse,
     ClientStatusResponse,
     TelegramRequest,
+    TradeInstructionResponse,
+    TradeAckRequest,
 )
 from .store import (
     bind_client,
     client_for_token,
     create_session,
     find_by_pairing_code,
+    next_instruction,
+    acknowledge_instruction,
 )
 
 app = FastAPI(title="GOLD_AI Owner Server", version="0.1.0")
@@ -109,3 +113,38 @@ def telegram(req: TelegramRequest) -> dict:
         "telegram_bot": "https://t.me/Princetradingbot",
         "next_step": "Send /start to @Princetradingbot.",
     }
+
+
+@app.get("/v1/instructions/next", response_model=TradeInstructionResponse)
+def get_next_instruction(authorization: str = Header(default="")) -> TradeInstructionResponse:
+    token = authorization.removeprefix("Bearer ").strip()
+    client = client_for_token(token)
+    if client is None:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    if client.status != "ACTIVE":
+        return TradeInstructionResponse(available=False)
+
+    row = next_instruction(client.id)
+    if row is None:
+        return TradeInstructionResponse(available=False)
+
+    import json
+    return TradeInstructionResponse(
+        available=True,
+        instruction_id=int(row["id"]),
+        signal_key=str(row["signal_key"]),
+        payload=json.loads(str(row["payload_json"])),
+    )
+
+
+@app.post("/v1/instructions/ack")
+def ack_instruction(req: TradeAckRequest, authorization: str = Header(default="")) -> dict:
+    token = authorization.removeprefix("Bearer ").strip()
+    client = client_for_token(token)
+    if client is None:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+
+    ok = acknowledge_instruction(client.id, req.instruction_id, req.status, req.message)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Instruction not pending or not found.")
+    return {"ok": True}
