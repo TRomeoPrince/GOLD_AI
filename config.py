@@ -38,7 +38,7 @@ M5_BARS = 1500
 M15_BARS = 500
 MIN_STRATEGY_TIMEFRAME = "M15"
 
-AI_MODE = "SHADOW"
+AI_MODE = os.getenv("GOLD_AI_AI_MODE", "OFF").upper()
 AI_PROVIDER = os.getenv("GOLD_AI_AI_PROVIDER", "GROQ").upper()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 LIVE_TRADING = False
