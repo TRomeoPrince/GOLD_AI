@@ -164,8 +164,15 @@ class M15StructureTrailingManager:
             raise RuntimeError(f"Symbol info unavailable for {symbol}.")
         point = float(info.point)
         digits = int(info.digits)
+        name = str(symbol).upper()
+
+        # GOLD convention used by this project:
+        # 1 pip = 10 MT5 points. Example on a 2-digit XAUUSD quote:
+        # point=0.01 -> pip=0.10, therefore 12 pips = 1.20 in price.
+        if "XAU" in name or "GOLD" in name:
+            return point * 10.0
+
         # Standard FX convention: 5/3-digit quotes use 10 points per pip.
-        # Gold and other 2-digit symbols use one point per pip.
         return point * 10.0 if digits in (3, 5) else point
 
     def protect_older_positions(
