@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import argparse
 
-from .store import create_client, list_clients, set_status
+import json
+from datetime import datetime, timezone
+
+from .store import (
+    client_by_name,
+    create_client,
+    enqueue_instruction,
+    list_clients,
+    set_status,
+)
 
 
 def main() -> None:
@@ -17,6 +26,9 @@ def main() -> None:
     status.add_argument("--set", required=True, dest="new_status")
 
     sub.add_parser("list")
+
+    test = sub.add_parser("test")
+    test.add_argument("--name", required=True)
 
     args = parser.parse_args()
 
@@ -38,6 +50,17 @@ def main() -> None:
                 f"MT5={row.mt5_login or '-'}@{row.mt5_server or '-'} "
                 f"TG=@{row.telegram_username or '-'}"
             )
+    elif args.cmd == "test":
+        client = client_by_name(args.name)
+        if client is None:
+            raise SystemExit(f"Unknown client: {args.name}")
+        key = f"TEST|{args.name}|{datetime.now(timezone.utc).isoformat()}"
+        payload = json.dumps({
+            "kind": "TEST",
+            "message": "GOLD_AI remote link test",
+        })
+        ok = enqueue_instruction(client.id, key, payload)
+        print(f"Queued test for {client.name}: {'OK' if ok else 'DUPLICATE'}")
 
 
 if __name__ == "__main__":
