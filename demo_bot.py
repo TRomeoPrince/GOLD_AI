@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -454,8 +455,20 @@ def _build_market_stack() -> tuple[dict, object]:
     return clients, status
 
 
+def _load_runtime_env() -> Path:
+    """Load .env from beside the EXE when frozen, else from project root."""
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).resolve().parent
+    else:
+        base_dir = Path(__file__).resolve().parent
+
+    env_path = base_dir / ".env"
+    load_dotenv(env_path)
+    return env_path
+
+
 def main() -> None:
-    load_dotenv()
+    env_path = _load_runtime_env()
     orders_log: Path | None = None
     executed: set[str] = set()
     telegram_trade_messages: dict[int, int] = {}
@@ -612,6 +625,7 @@ def main() -> None:
         print("OPPOSITE SIDE : ALLOWED IF THE MT5 ACCOUNT SUPPORTS HEDGING")
         print(f"POLLING       : every {DEMO_POLL_SECONDS}s")
         print(f"TELEGRAM      : {'ENABLED' if telegram.configured else 'DISABLED - env vars missing'}")
+        print(f"ENV FILE      : {env_path}")
         print(f"DEDUP RESTORE : {len(executed)} persisted signal keys")
         print("STATUS        : RUNNING - Ctrl+C to stop")
 
