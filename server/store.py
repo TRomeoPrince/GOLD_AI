@@ -1,13 +1,28 @@
 from __future__ import annotations
 
+import os
 import secrets
 import sqlite3
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path(__file__).resolve().parent / "gold_ai_server.db"
+
+def _resolve_db_path() -> Path:
+    override = os.getenv("GOLD_AI_DB_PATH", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+
+    if getattr(sys, "frozen", False):
+        project_root = Path(sys.executable).resolve().parent.parent
+        return project_root / "server" / "gold_ai_server.db"
+
+    return Path(__file__).resolve().parent / "gold_ai_server.db"
+
+
+DB_PATH = _resolve_db_path()
 
 
 @dataclass
