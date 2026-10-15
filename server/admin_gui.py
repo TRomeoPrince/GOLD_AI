@@ -9,6 +9,7 @@ from server.store import (
     list_hosted_accounts,
     news_lock_enabled,
     set_client_risk,
+    set_hosted_account_status,
     set_news_lock,
     set_status,
 )
@@ -190,27 +191,72 @@ class GoldAIAdmin(tk.Tk):
             tree.column(col, width=widths[col], anchor="center")
         tree.pack(fill="both", expand=True, padx=12, pady=12)
 
-        rows = list_hosted_accounts()
-        for row in rows:
-            tree.insert(
-                "",
-                "end",
-                values=(
-                    row["client_name"],
-                    row["mt5_login"],
-                    row["mt5_server"],
-                    row["status"],
-                    row["updated_utc"],
-                ),
-            )
+        item_to_client_id = {}
+
+        def load_rows():
+            for item in tree.get_children():
+                tree.delete(item)
+            item_to_client_id.clear()
+            for row in list_hosted_accounts():
+                item = tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        row["client_name"],
+                        row["mt5_login"],
+                        row["mt5_server"],
+                        row["status"],
+                        row["updated_utc"],
+                    ),
+                )
+                item_to_client_id[item] = int(row["client_id"])
+
+        def change_hosted_status(status):
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning(
+                    "Hosted MT5",
+                    "Select a hosted MT5 request first.",
+                    parent=window,
+                )
+                return
+
+            item = selection[0]
+            client_id = item_to_client_id.get(item)
+            if client_id is None:
+                return
+
+            try:
+                set_hosted_account_status(client_id, status)
+                self.status.set(f"Hosted MT5 request → {status}")
+                load_rows()
+            except Exception as exc:
+                messagebox.showerror("Hosted MT5", str(exc), parent=window)
+
+        load_rows()
 
         footer = ttk.Frame(window, padding=(12, 0, 12, 12))
         footer.pack(fill="x")
+
+        actions = ttk.Frame(footer)
+        actions.pack(side="right")
+        ttk.Button(
+            actions,
+            text="Approve",
+            command=lambda: change_hosted_status("APPROVED"),
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            actions,
+            text="Reject / Disable",
+            command=lambda: change_hosted_status("DISABLED"),
+        ).pack(side="left", padx=4)
+        ttk.Button(actions, text="Refresh", command=load_rows).pack(side="left", padx=4)
+        ttk.Button(actions, text="Close", command=window.destroy).pack(side="left", padx=4)
+
         ttk.Label(
             footer,
-            text="Trading passwords are encrypted and are not displayed in the Admin app.",
+            text="Passwords stay encrypted. APPROVED means accepted; provisioning is a separate step.",
         ).pack(side="left")
-        ttk.Button(footer, text="Close", command=window.destroy).pack(side="right")
 
     def toggle_news_lock(self):
         set_news_lock(bool(self.news_var.get()))
