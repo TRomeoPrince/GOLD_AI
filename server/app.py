@@ -6,6 +6,7 @@ from .models import (
     AuthorizeRequest,
     AuthorizeResponse,
     ClientStatusResponse,
+    HostedAccountRequest,
     MobileOverviewResponse,
     TelegramRequest,
     TradeInstructionResponse,
@@ -18,7 +19,9 @@ from .store import (
     find_by_pairing_code,
     next_instruction,
     acknowledge_instruction,
+    hosted_account_for_client,
     news_lock_enabled,
+    upsert_hosted_account,
 )
 
 app = FastAPI(title="GOLD_AI Owner Server", version="0.2.0")
@@ -110,6 +113,7 @@ def client_status(authorization: str = Header(default="")) -> ClientStatusRespon
 @app.get("/v1/mobile/overview", response_model=MobileOverviewResponse)
 def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewResponse:
     client = _client_from_authorization(authorization)
+    hosted = hosted_account_for_client(client.id)
     return MobileOverviewResponse(
         allowed=client.status == "ACTIVE",
         display_name=client.name,
@@ -121,7 +125,38 @@ def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewRe
         max_open_risk_pct=client.max_open_risk_pct,
         max_daily_loss_pct=client.max_daily_loss_pct,
         news_lock=news_lock_enabled(),
+        hosted_mt5_status=(hosted or {}).get("status", ""),
+        hosted_mt5_login=(hosted or {}).get("mt5_login"),
+        hosted_mt5_server=(hosted or {}).get("mt5_server", ""),
     )
+
+
+@app.post("/v1/mobile/hosted-account")
+def submit_hosted_account(
+    req: HostedAccountRequest,
+    authorization: str = Header(default=""),
+) -> dict:
+    client = _client_from_authorization(authorization)
+    if client.status != "ACTIVE":
+        raise HTTPException(status_code=403, detail=f"Client access is {client.status}.")
+
+    try:
+        record = upsert_hosted_account(
+            client.id,
+            req.mt5_login,
+            req.mt5_server,
+            req.trading_password,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "ok": True,
+        "status": record["status"],
+        "mt5_login": record["mt5_login"],
+        "mt5_server": record["mt5_server"],
+        "message": "Hosted MT5 request received securely.",
+    }
 
 
 @app.post("/v1/client/telegram")
