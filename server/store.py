@@ -118,12 +118,33 @@ def connect() -> sqlite3.Connection:
             mt5_server TEXT NOT NULL,
             password_ciphertext TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'PENDING',
+            terminal_path TEXT NOT NULL DEFAULT '',
+            worker_pid INTEGER,
+            last_error TEXT NOT NULL DEFAULT '',
+            last_seen_utc TEXT NOT NULL DEFAULT '',
+            account_balance REAL,
+            account_equity REAL,
             created_utc TEXT NOT NULL,
             updated_utc TEXT NOT NULL,
             FOREIGN KEY(client_id) REFERENCES clients(id)
         )
         """
     )
+    hosted_cols = {
+        row["name"] for row in con.execute("PRAGMA table_info(hosted_accounts)").fetchall()
+    }
+    hosted_migrations = {
+        "terminal_path": "ALTER TABLE hosted_accounts ADD COLUMN terminal_path TEXT NOT NULL DEFAULT ''",
+        "worker_pid": "ALTER TABLE hosted_accounts ADD COLUMN worker_pid INTEGER",
+        "last_error": "ALTER TABLE hosted_accounts ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+        "last_seen_utc": "ALTER TABLE hosted_accounts ADD COLUMN last_seen_utc TEXT NOT NULL DEFAULT ''",
+        "account_balance": "ALTER TABLE hosted_accounts ADD COLUMN account_balance REAL",
+        "account_equity": "ALTER TABLE hosted_accounts ADD COLUMN account_equity REAL",
+    }
+    for name, sql in hosted_migrations.items():
+        if name not in hosted_cols:
+            con.execute(sql)
+
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS server_settings (
@@ -375,9 +396,20 @@ def hosted_account_for_client(client_id: int) -> dict | None:
     with connect() as con:
         row = con.execute(
             """
-            SELECT id, client_id, mt5_login, mt5_server, status, created_utc, updated_utc
+            SELECT id, client_id, mt5_login, mt5_server, status,
+                   terminal_path, worker_pid, last_error, last_seen_utc,
+                   account_balance, account_equity, created_utc, updated_utc
             FROM hosted_accounts WHERE client_id=?
             """,
+            (int(client_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def hosted_account_secret_for_client(client_id: int) -> dict | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM hosted_accounts WHERE client_id=?",
             (int(client_id),),
         ).fetchone()
     return dict(row) if row else None
@@ -388,7 +420,9 @@ def list_hosted_accounts() -> list[dict]:
         rows = con.execute(
             """
             SELECT h.id, h.client_id, c.name AS client_name, h.mt5_login, h.mt5_server,
-                   h.status, h.created_utc, h.updated_utc
+                   h.status, h.terminal_path, h.worker_pid, h.last_error,
+                   h.last_seen_utc, h.account_balance, h.account_equity,
+                   h.created_utc, h.updated_utc
             FROM hosted_accounts h
             JOIN clients c ON c.id=h.client_id
             ORDER BY h.updated_utc DESC
@@ -406,6 +440,63 @@ def set_hosted_account_status(client_id: int, status: str) -> None:
         cur = con.execute(
             "UPDATE hosted_accounts SET status=?, updated_utc=? WHERE client_id=?",
             (status, now, int(client_id)),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("Hosted account not found.")
+
+
+def client_by_id(client_id: int) -> ClientRecord | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM clients WHERE id=?",
+            (int(client_id),),
+        ).fetchone()
+    return _client(row)
+
+
+def set_hosted_runtime(
+    client_id: int,
+    *,
+    terminal_path: str | None = None,
+    worker_pid: int | None | object = ...,
+    last_error: str | None = None,
+    last_seen_utc: str | None = None,
+    account_balance: float | None | object = ...,
+    account_equity: float | None | object = ...,
+) -> None:
+    fields = []
+    values = []
+
+    if terminal_path is not None:
+        fields.append("terminal_path=?")
+        values.append(str(terminal_path))
+    if worker_pid is not ...:
+        fields.append("worker_pid=?")
+        values.append(None if worker_pid is None else int(worker_pid))
+    if last_error is not None:
+        fields.append("last_error=?")
+        values.append(str(last_error)[:2000])
+    if last_seen_utc is not None:
+        fields.append("last_seen_utc=?")
+        values.append(str(last_seen_utc))
+    if account_balance is not ...:
+        fields.append("account_balance=?")
+        values.append(None if account_balance is None else float(account_balance))
+    if account_equity is not ...:
+        fields.append("account_equity=?")
+        values.append(None if account_equity is None else float(account_equity))
+
+    if not fields:
+        return
+
+    fields.append("updated_utc=?")
+    values.append(datetime.now(timezone.utc).isoformat())
+    values.append(int(client_id))
+
+    with connect() as con:
+        cur = con.execute(
+            f"UPDATE hosted_accounts SET {', '.join(fields)} WHERE client_id=?",
+            tuple(values),
         )
         if cur.rowcount == 0:
             raise ValueError("Hosted account not found.")
