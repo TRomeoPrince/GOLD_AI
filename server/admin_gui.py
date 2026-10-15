@@ -6,6 +6,7 @@ from tkinter import messagebox, simpledialog, ttk
 from server.store import (
     create_client,
     list_clients,
+    list_hosted_accounts,
     news_lock_enabled,
     set_client_risk,
     set_news_lock,
@@ -59,6 +60,7 @@ class GoldAIAdmin(tk.Tk):
         ttk.Button(buttons, text="Revoke", command=lambda:self.change_status("REVOKED")).pack(side="left", padx=4)
         ttk.Button(buttons, text="Expire", command=lambda:self.change_status("EXPIRED")).pack(side="left", padx=4)
         ttk.Button(buttons, text="Copy Pairing Code", command=self.copy_pairing).pack(side="left", padx=(16,4))
+        ttk.Button(buttons, text="Hosted MT5 Requests", command=self.show_hosted_requests).pack(side="left", padx=(16,4))
         ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side="right")
 
         risk = ttk.LabelFrame(body, text="Selected Client Risk Limits", padding=10)
@@ -167,6 +169,48 @@ class GoldAIAdmin(tk.Tk):
             self.refresh()
         except Exception as exc:
             messagebox.showerror("Risk Settings", str(exc))
+
+    def show_hosted_requests(self):
+        window = tk.Toplevel(self)
+        window.title("Hosted MT5 Requests")
+        window.geometry("760x360")
+
+        cols = ("client", "login", "server", "status", "updated")
+        tree = ttk.Treeview(window, columns=cols, show="headings")
+        headings = {
+            "client": "Client",
+            "login": "MT5 Login",
+            "server": "MT5 Server",
+            "status": "Status",
+            "updated": "Updated UTC",
+        }
+        widths = {"client": 140, "login": 110, "server": 180, "status": 110, "updated": 180}
+        for col in cols:
+            tree.heading(col, text=headings[col])
+            tree.column(col, width=widths[col], anchor="center")
+        tree.pack(fill="both", expand=True, padx=12, pady=12)
+
+        rows = list_hosted_accounts()
+        for row in rows:
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    row["client_name"],
+                    row["mt5_login"],
+                    row["mt5_server"],
+                    row["status"],
+                    row["updated_utc"],
+                ),
+            )
+
+        footer = ttk.Frame(window, padding=(12, 0, 12, 12))
+        footer.pack(fill="x")
+        ttk.Label(
+            footer,
+            text="Trading passwords are encrypted and are not displayed in the Admin app.",
+        ).pack(side="left")
+        ttk.Button(footer, text="Close", command=window.destroy).pack(side="right")
 
     def toggle_news_lock(self):
         set_news_lock(bool(self.news_var.get()))
