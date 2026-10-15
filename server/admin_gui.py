@@ -10,6 +10,7 @@ from server.store import (
     list_hosted_accounts,
     news_lock_enabled,
     set_client_risk,
+    set_execution_mode,
     set_hosted_account_status,
     set_news_lock,
     set_status,
@@ -41,13 +42,13 @@ class GoldAIAdmin(tk.Tk):
         body = ttk.Frame(self, padding=(14, 0, 14, 14))
         body.pack(fill="both", expand=True)
 
-        cols = ("name", "status", "mt5", "server", "telegram", "risk", "open", "daily")
+        cols = ("name", "status", "mode", "mt5", "server", "telegram", "risk", "open", "daily")
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=18)
         headings = {
-            "name":"Client","status":"Status","mt5":"MT5 Login","server":"MT5 Server",
+            "name":"Client","status":"Status","mode":"Execution","mt5":"MT5 Login","server":"MT5 Server",
             "telegram":"Telegram","risk":"Risk/Trade","open":"Max Open","daily":"Daily Loss"
         }
-        widths = {"name":130,"status":90,"mt5":100,"server":160,"telegram":120,"risk":85,"open":85,"daily":85}
+        widths = {"name":120,"status":85,"mode":90,"mt5":100,"server":145,"telegram":115,"risk":80,"open":80,"daily":80}
         for c in cols:
             self.tree.heading(c, text=headings[c])
             self.tree.column(c, width=widths[c], anchor="center")
@@ -63,6 +64,11 @@ class GoldAIAdmin(tk.Tk):
         ttk.Button(buttons, text="Expire", command=lambda:self.change_status("EXPIRED")).pack(side="left", padx=4)
         ttk.Button(buttons, text="Copy Pairing Code", command=self.copy_pairing).pack(side="left", padx=(16,4))
         ttk.Button(buttons, text="Hosted MT5 Requests", command=self.show_hosted_requests).pack(side="left", padx=(16,4))
+        ttk.Button(
+            buttons,
+            text="Use PC Client",
+            command=self.use_pc_mode,
+        ).pack(side="right", padx=4)
         ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side="right")
 
         risk = ttk.LabelFrame(body, text="Selected Client Risk Limits", padding=10)
@@ -93,7 +99,7 @@ class GoldAIAdmin(tk.Tk):
         selected_item = None
         for c in list_clients():
             item = self.tree.insert("", "end", values=(
-                c.name, c.status, c.mt5_login or "-", c.mt5_server or "-",
+                c.name, c.status, c.execution_mode, c.mt5_login or "-", c.mt5_server or "-",
                 f"@{c.telegram_username}" if c.telegram_username else "-",
                 f"{c.risk_per_trade_pct:.2f}%",
                 f"{c.max_open_risk_pct:.1f}%",
@@ -144,6 +150,20 @@ class GoldAIAdmin(tk.Tk):
             self.refresh()
         except Exception as exc:
             messagebox.showerror("GOLD_AI Admin", str(exc))
+
+    def use_pc_mode(self):
+        if not self.selected_name:
+            messagebox.showwarning("GOLD_AI Admin", "Select a client first.")
+            return
+        for c in list_clients():
+            if c.name == self.selected_name:
+                try:
+                    set_execution_mode(c.id, "CLIENT_PC")
+                    self.status.set(f"{c.name} execution mode → CLIENT_PC")
+                    self.refresh()
+                except Exception as exc:
+                    messagebox.showerror("GOLD_AI Admin", str(exc))
+                return
 
     def copy_pairing(self):
         if not self.selected_name:
@@ -256,11 +276,14 @@ class GoldAIAdmin(tk.Tk):
             if client_id is None:
                 return
             try:
+                if status == "APPROVED":
+                    set_execution_mode(client_id, "HOSTED")
                 if status == "DISABLED":
                     try:
                         stop_worker(client_id)
                     except Exception:
                         pass
+                    set_execution_mode(client_id, "CLIENT_PC")
                 set_hosted_account_status(client_id, status)
                 self.status.set(f"Hosted MT5 request → {status}")
                 load_rows()
