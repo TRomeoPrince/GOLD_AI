@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from server.hosted_manager import provision_instance, start_worker, stop_worker
 from server.store import (
     create_client,
     list_clients,
@@ -173,23 +174,41 @@ class GoldAIAdmin(tk.Tk):
 
     def show_hosted_requests(self):
         window = tk.Toplevel(self)
-        window.title("Hosted MT5 Requests")
-        window.geometry("760x360")
+        window.title("Hosted MT5 Manager")
+        window.geometry("1180x520")
+        window.minsize(980, 430)
 
-        cols = ("client", "login", "server", "status", "updated")
+        cols = (
+            "client", "login", "server", "status", "pid",
+            "balance", "equity", "seen", "error",
+        )
         tree = ttk.Treeview(window, columns=cols, show="headings")
         headings = {
             "client": "Client",
             "login": "MT5 Login",
             "server": "MT5 Server",
             "status": "Status",
-            "updated": "Updated UTC",
+            "pid": "Worker PID",
+            "balance": "Balance",
+            "equity": "Equity",
+            "seen": "Last Seen UTC",
+            "error": "Last Error",
         }
-        widths = {"client": 140, "login": 110, "server": 180, "status": 110, "updated": 180}
+        widths = {
+            "client": 120,
+            "login": 105,
+            "server": 150,
+            "status": 95,
+            "pid": 90,
+            "balance": 90,
+            "equity": 90,
+            "seen": 180,
+            "error": 250,
+        }
         for col in cols:
             tree.heading(col, text=headings[col])
             tree.column(col, width=widths[col], anchor="center")
-        tree.pack(fill="both", expand=True, padx=12, pady=12)
+        tree.pack(fill="both", expand=True, padx=12, pady=(12, 6))
 
         item_to_client_id = {}
 
@@ -206,12 +225,22 @@ class GoldAIAdmin(tk.Tk):
                         row["mt5_login"],
                         row["mt5_server"],
                         row["status"],
-                        row["updated_utc"],
+                        row.get("worker_pid") or "-",
+                        (
+                            f'{float(row["account_balance"]):.2f}'
+                            if row.get("account_balance") is not None else "-"
+                        ),
+                        (
+                            f'{float(row["account_equity"]):.2f}'
+                            if row.get("account_equity") is not None else "-"
+                        ),
+                        row.get("last_seen_utc") or "-",
+                        row.get("last_error") or "-",
                     ),
                 )
                 item_to_client_id[item] = int(row["client_id"])
 
-        def change_hosted_status(status):
+        def selected_client_id():
             selection = tree.selection()
             if not selection:
                 messagebox.showwarning(
@@ -219,44 +248,142 @@ class GoldAIAdmin(tk.Tk):
                     "Select a hosted MT5 request first.",
                     parent=window,
                 )
-                return
+                return None
+            return item_to_client_id.get(selection[0])
 
-            item = selection[0]
-            client_id = item_to_client_id.get(item)
+        def change_hosted_status(status):
+            client_id = selected_client_id()
             if client_id is None:
                 return
-
             try:
+                if status == "DISABLED":
+                    try:
+                        stop_worker(client_id)
+                    except Exception:
+                        pass
                 set_hosted_account_status(client_id, status)
                 self.status.set(f"Hosted MT5 request → {status}")
                 load_rows()
             except Exception as exc:
                 messagebox.showerror("Hosted MT5", str(exc), parent=window)
 
+        def provision_and_start():
+            client_id = selected_client_id()
+            if client_id is None:
+                return
+
+            terminal = filedialog.askopenfilename(
+                parent=window,
+                title="Select the MT5 terminal executable to clone",
+                filetypes=[
+                    ("MetaTrader 5 terminal", "terminal64.exe"),
+                    ("Executable files", "*.exe"),
+                    ("All files", "*.*"),
+                ],
+            )
+            if not terminal:
+                return
+
+            try:
+                path = provision_instance(client_id, terminal)
+                pid = start_worker(client_id)
+                self.status.set(
+                    f"Hosted MT5 provisioned and worker started • PID {pid}"
+                )
+                messagebox.showinfo(
+                    "Hosted MT5",
+                    "Provisioning started successfully.\n\n"
+                    f"Terminal: {path}\n"
+                    f"Worker PID: {pid}\n\n"
+                    "Status will become ACTIVE after MT5 login succeeds.",
+                    parent=window,
+                )
+                window.after(2000, load_rows)
+            except Exception as exc:
+                messagebox.showerror("Hosted MT5", str(exc), parent=window)
+                load_rows()
+
+        def start_selected():
+            client_id = selected_client_id()
+            if client_id is None:
+                return
+            try:
+                pid = start_worker(client_id)
+                self.status.set(f"Hosted MT5 worker started • PID {pid}")
+                window.after(1500, load_rows)
+            except Exception as exc:
+                messagebox.showerror("Hosted MT5", str(exc), parent=window)
+                load_rows()
+
+        def stop_selected():
+            client_id = selected_client_id()
+            if client_id is None:
+                return
+            try:
+                stop_worker(client_id)
+                self.status.set("Hosted MT5 worker stopped.")
+                load_rows()
+            except Exception as exc:
+                messagebox.showerror("Hosted MT5", str(exc), parent=window)
+
+        def restart_selected():
+            client_id = selected_client_id()
+            if client_id is None:
+                return
+            try:
+                stop_worker(client_id)
+                pid = start_worker(client_id)
+                self.status.set(f"Hosted MT5 worker restarted • PID {pid}")
+                window.after(1500, load_rows)
+            except Exception as exc:
+                messagebox.showerror("Hosted MT5", str(exc), parent=window)
+                load_rows()
+
         load_rows()
 
-        footer = ttk.Frame(window, padding=(12, 0, 12, 12))
-        footer.pack(fill="x")
-
-        actions = ttk.Frame(footer)
-        actions.pack(side="right")
+        actions = ttk.Frame(window, padding=(12, 4, 12, 6))
+        actions.pack(fill="x")
         ttk.Button(
             actions,
-            text="Approve",
+            text="1. Approve",
             command=lambda: change_hosted_status("APPROVED"),
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            actions,
+            text="2. Provision + Start",
+            command=provision_and_start,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            actions,
+            text="Start",
+            command=start_selected,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            actions,
+            text="Restart",
+            command=restart_selected,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            actions,
+            text="Stop",
+            command=stop_selected,
         ).pack(side="left", padx=4)
         ttk.Button(
             actions,
             text="Reject / Disable",
             command=lambda: change_hosted_status("DISABLED"),
-        ).pack(side="left", padx=4)
-        ttk.Button(actions, text="Refresh", command=load_rows).pack(side="left", padx=4)
-        ttk.Button(actions, text="Close", command=window.destroy).pack(side="left", padx=4)
+        ).pack(side="left", padx=(18, 4))
+        ttk.Button(actions, text="Refresh", command=load_rows).pack(side="right", padx=4)
+        ttk.Button(actions, text="Close", command=window.destroy).pack(side="right", padx=4)
 
         ttk.Label(
-            footer,
-            text="Passwords stay encrypted. APPROVED means accepted; provisioning is a separate step.",
-        ).pack(side="left")
+            window,
+            padding=(12, 0, 12, 12),
+            text=(
+                "Flow: APPROVE → PROVISION + START → ACTIVE. "
+                "Passwords remain encrypted and are decrypted only inside the local hosted worker."
+            ),
+        ).pack(anchor="w")
 
     def toggle_news_lock(self):
         set_news_lock(bool(self.news_var.get()))
