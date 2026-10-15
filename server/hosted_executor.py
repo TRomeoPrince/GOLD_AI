@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import floor
+from datetime import datetime
 
 import MetaTrader5 as mt5
 
@@ -110,10 +111,35 @@ def _open_risk_pct() -> float:
     return 100.0 * total / equity
 
 
+def _daily_loss_pct() -> float:
+    account = mt5.account_info()
+    if account is None:
+        return float("inf")
+
+    now = datetime.now()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    deals = mt5.history_deals_get(start, now) or ()
+
+    realized = 0.0
+    for d in deals:
+        realized += float(getattr(d, "profit", 0.0) or 0.0)
+        realized += float(getattr(d, "commission", 0.0) or 0.0)
+        realized += float(getattr(d, "swap", 0.0) or 0.0)
+        realized += float(getattr(d, "fee", 0.0) or 0.0)
+
+    start_balance = float(account.balance) - realized
+    if start_balance <= 0:
+        return float("inf")
+
+    loss_cash = max(0.0, start_balance - float(account.equity))
+    return 100.0 * loss_cash / start_balance
+
+
 def execute_instruction(
     payload: dict,
     risk_per_trade_pct: float,
     max_open_risk_pct: float,
+    max_daily_loss_pct: float,
 ) -> ExecutionResult:
     terminal = mt5.terminal_info()
     account = mt5.account_info()
@@ -121,6 +147,14 @@ def execute_instruction(
         raise RuntimeError("MT5 terminal/account unavailable.")
     if not bool(getattr(terminal, "trade_allowed", False)):
         return ExecutionResult(False, None, "Algo Trading is disabled.")
+
+    daily_loss = _daily_loss_pct()
+    if daily_loss >= float(max_daily_loss_pct):
+        return ExecutionResult(
+            False,
+            None,
+            f"DAILY_LOSS_BLOCKED: {daily_loss:.2f}% >= {float(max_daily_loss_pct):.2f}%.",
+        )
 
     direction = str(payload["direction"]).upper()
     symbol = _resolve_symbol(
