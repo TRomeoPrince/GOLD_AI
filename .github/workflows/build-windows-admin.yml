@@ -1,0 +1,42 @@
+name: Build GOLD_AI Admin EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "server/admin_gui.py"
+      - "server/store.py"
+      - "server/credential_vault.py"
+      - "server/requirements.txt"
+      - "build/GOLD_AI_Admin.spec"
+      - ".github/workflows/build-windows-admin.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: cmd
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server\requirements.txt
+          pip install pyinstaller
+
+      - name: Build GOLD_AI_Admin.exe
+        shell: cmd
+        run: |
+          python -m PyInstaller --clean --noconfirm --distpath dist --workpath build\admin_pyi build\GOLD_AI_Admin.spec
+
+      - name: Upload Admin EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOLD_AI-Admin-Windows
+          path: dist/GOLD_AI_Admin.exe
+          retention-days: 90
