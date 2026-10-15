@@ -76,6 +76,8 @@ def run(client_id: int) -> None:
             if client.status != "ACTIVE":
                 time.sleep(2)
                 continue
+            if client.execution_mode != "HOSTED":
+                raise RuntimeError("Client execution mode is no longer HOSTED.")
 
             info = mt5.account_info()
             if info is None:
@@ -105,6 +107,7 @@ def run(client_id: int) -> None:
                         payload,
                         client.risk_per_trade_pct,
                         client.max_open_risk_pct,
+                        client.max_daily_loss_pct,
                     )
                     ack_status = "EXECUTED" if result.sent else "REJECTED"
                     ack_message = (
