@@ -231,11 +231,14 @@ class GoldAIAdmin(tk.Tk):
         tree.pack(fill="both", expand=True, padx=12, pady=(12, 6))
 
         item_to_client_id = {}
+        selected_client_id_value = {"id": None}
 
         def load_rows():
+            previous_client_id = selected_client_id_value["id"]
             for item in tree.get_children():
                 tree.delete(item)
             item_to_client_id.clear()
+            preferred_item = None
             for row in list_hosted_accounts():
                 item = tree.insert(
                     "",
@@ -258,7 +261,27 @@ class GoldAIAdmin(tk.Tk):
                         row.get("last_error") or "-",
                     ),
                 )
-                item_to_client_id[item] = int(row["client_id"])
+                client_id = int(row["client_id"])
+                item_to_client_id[item] = client_id
+                if previous_client_id == client_id:
+                    preferred_item = item
+
+            if preferred_item is None:
+                children = tree.get_children()
+                if children:
+                    preferred_item = children[0]
+
+            if preferred_item is not None:
+                tree.selection_set(preferred_item)
+                tree.focus(preferred_item)
+                selected_client_id_value["id"] = item_to_client_id.get(preferred_item)
+
+        def remember_selection(_event=None):
+            selection = tree.selection()
+            if selection:
+                selected_client_id_value["id"] = item_to_client_id.get(selection[0])
+
+        tree.bind("<<TreeviewSelect>>", remember_selection)
 
         def selected_client_id():
             selection = tree.selection()
@@ -378,6 +401,14 @@ class GoldAIAdmin(tk.Tk):
             os.startfile(str(path))
 
         load_rows()
+
+        def auto_refresh():
+            if not window.winfo_exists():
+                return
+            load_rows()
+            window.after(2000, auto_refresh)
+
+        window.after(2000, auto_refresh)
 
         actions = ttk.Frame(window, padding=(12, 4, 12, 6))
         actions.pack(fill="x")
