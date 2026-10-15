@@ -399,7 +399,7 @@ def list_hosted_accounts() -> list[dict]:
 
 def set_hosted_account_status(client_id: int, status: str) -> None:
     status = status.upper()
-    if status not in {"PENDING", "PROVISIONED", "ACTIVE", "FAILED", "DISABLED"}:
+    if status not in {"PENDING", "APPROVED", "PROVISIONED", "ACTIVE", "FAILED", "DISABLED"}:
         raise ValueError("Invalid hosted account status.")
     now = datetime.now(timezone.utc).isoformat()
     with connect() as con:
