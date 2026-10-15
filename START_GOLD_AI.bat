@@ -9,6 +9,10 @@ timeout /t 2 /nobreak >nul
 start "GOLD_AI SIGNAL ENGINE" cmd /k ".venv\Scripts\python -m server.signal_engine"
 timeout /t 2 /nobreak >nul
 
+echo Starting hosted MT5 workers...
+start "GOLD_AI HOSTED MT5" cmd /c ".venv\Scripts\python -m server.hosted_manager --start-all"
+timeout /t 2 /nobreak >nul
+
 echo Starting ngrok...
 start "GOLD_AI NGROK" cmd /k "ngrok http --domain=grandpa-skier-sphere.ngrok-free.dev 8765"
 
