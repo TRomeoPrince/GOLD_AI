@@ -19,3 +19,6 @@ server/credential_vault.key
 
 # Per-customer hosted MT5 installations
 server/hosted_mt5/
+
+# Hosted worker diagnostic logs
+server/hosted_logs/
