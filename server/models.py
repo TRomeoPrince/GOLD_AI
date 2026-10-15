@@ -41,6 +41,15 @@ class MobileOverviewResponse(BaseModel):
     max_open_risk_pct: float
     max_daily_loss_pct: float
     news_lock: bool
+    hosted_mt5_status: str = ""
+    hosted_mt5_login: Optional[int] = None
+    hosted_mt5_server: str = ""
+
+
+class HostedAccountRequest(BaseModel):
+    mt5_login: int
+    mt5_server: str
+    trading_password: str
 
 
 class TradeInstructionResponse(BaseModel):
