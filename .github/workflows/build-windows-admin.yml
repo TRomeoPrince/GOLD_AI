@@ -32,6 +32,11 @@ jobs:
           pip install -r server\requirements.txt
           pip install pyinstaller
 
+      - name: Validate hosted MT5 modules
+        shell: cmd
+        run: |
+          python -m py_compile server\store.py server\credential_vault.py server\hosted_manager.py server\hosted_executor.py server\hosted_worker.py server\admin_gui.py
+
       - name: Build GOLD_AI_Admin.exe
         shell: cmd
         run: |
