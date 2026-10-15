@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from .credential_vault import encrypt_secret
+
 
 def _resolve_db_path() -> Path:
     override = os.getenv("GOLD_AI_DB_PATH", "").strip()
@@ -92,6 +94,21 @@ def connect() -> sqlite3.Connection:
             created_utc TEXT NOT NULL,
             acked_utc TEXT NOT NULL DEFAULT '',
             UNIQUE(client_id, signal_key),
+            FOREIGN KEY(client_id) REFERENCES clients(id)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS hosted_accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL UNIQUE,
+            mt5_login INTEGER NOT NULL,
+            mt5_server TEXT NOT NULL,
+            password_ciphertext TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            created_utc TEXT NOT NULL,
+            updated_utc TEXT NOT NULL,
             FOREIGN KEY(client_id) REFERENCES clients(id)
         )
         """
@@ -292,3 +309,92 @@ def news_lock_enabled() -> bool:
             "SELECT value FROM server_settings WHERE key='news_lock'"
         ).fetchone()
     return bool(row and str(row["value"]) == "1")
+
+
+def upsert_hosted_account(client_id: int, mt5_login: int, mt5_server: str, trading_password: str) -> dict:
+    mt5_login = int(mt5_login)
+    mt5_server = mt5_server.strip()
+    trading_password = trading_password.strip()
+    if mt5_login <= 0:
+        raise ValueError("MT5 login must be a positive number.")
+    if not mt5_server:
+        raise ValueError("MT5 server is required.")
+    if not trading_password:
+        raise ValueError("MT5 trading password is required.")
+
+    ciphertext = encrypt_secret(trading_password)
+    now = datetime.now(timezone.utc).isoformat()
+
+    with connect() as con:
+        con.execute(
+            """
+            INSERT INTO hosted_accounts(
+                client_id, mt5_login, mt5_server, password_ciphertext,
+                status, created_utc, updated_utc
+            )
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(client_id) DO UPDATE SET
+                mt5_login=excluded.mt5_login,
+                mt5_server=excluded.mt5_server,
+                password_ciphertext=excluded.password_ciphertext,
+                status='PENDING',
+                updated_utc=excluded.updated_utc
+            """,
+            (
+                int(client_id),
+                mt5_login,
+                mt5_server,
+                ciphertext,
+                "PENDING",
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            """
+            SELECT id, client_id, mt5_login, mt5_server, status, created_utc, updated_utc
+            FROM hosted_accounts WHERE client_id=?
+            """,
+            (int(client_id),),
+        ).fetchone()
+    return dict(row)
+
+
+def hosted_account_for_client(client_id: int) -> dict | None:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT id, client_id, mt5_login, mt5_server, status, created_utc, updated_utc
+            FROM hosted_accounts WHERE client_id=?
+            """,
+            (int(client_id),),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def list_hosted_accounts() -> list[dict]:
+    with connect() as con:
+        rows = con.execute(
+            """
+            SELECT h.id, h.client_id, c.name AS client_name, h.mt5_login, h.mt5_server,
+                   h.status, h.created_utc, h.updated_utc
+            FROM hosted_accounts h
+            JOIN clients c ON c.id=h.client_id
+            ORDER BY h.updated_utc DESC
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def set_hosted_account_status(client_id: int, status: str) -> None:
+    status = status.upper()
+    if status not in {"PENDING", "PROVISIONED", "ACTIVE", "FAILED", "DISABLED"}:
+        raise ValueError("Invalid hosted account status.")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as con:
+        cur = con.execute(
+            "UPDATE hosted_accounts SET status=?, updated_utc=? WHERE client_id=?",
+            (status, now, int(client_id)),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("Hosted account not found.")
