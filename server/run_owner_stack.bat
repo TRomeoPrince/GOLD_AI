@@ -7,4 +7,4 @@ timeout /t 2 /nobreak >nul
 start "GOLD_AI SIGNAL ENGINE" cmd /k ".venv\Scripts\python -m server.signal_engine"
 
 echo GOLD_AI owner server + signal engine started.
-echo Keep your Cloudflare tunnel running separately.
+echo Public tunnel should forward port 8765.
