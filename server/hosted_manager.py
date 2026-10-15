@@ -35,7 +35,7 @@ def provision_instance(client_id: int, base_terminal_exe: str) -> str:
     record = hosted_account_for_client(client_id)
     if not record:
         raise ValueError("Hosted account request not found.")
-    if record["status"] not in {"APPROVED", "PROVISIONED", "FAILED", "DISABLED"}:
+    if record["status"] not in {"APPROVED", "PROVISIONED", "FAILED"}:
         raise ValueError("Approve the hosted MT5 request before provisioning.")
 
     source_exe = Path(base_terminal_exe).expanduser().resolve()
@@ -67,6 +67,15 @@ def _python_exe() -> Path:
     return py
 
 
+def _pid_alive(pid: int) -> bool:
+    result = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {int(pid)}"],
+        capture_output=True,
+        text=True,
+    )
+    return str(int(pid)) in result.stdout
+
+
 def start_worker(client_id: int) -> int:
     record = hosted_account_for_client(client_id)
     if not record:
@@ -76,8 +85,10 @@ def start_worker(client_id: int) -> int:
         raise ValueError("Hosted MT5 instance is not provisioned.")
 
     existing_pid = record.get("worker_pid")
-    if existing_pid:
+    if existing_pid and _pid_alive(int(existing_pid)):
         return int(existing_pid)
+    if existing_pid:
+        set_hosted_runtime(client_id, worker_pid=None)
 
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.Popen(
