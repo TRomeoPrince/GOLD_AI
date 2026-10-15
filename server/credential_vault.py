@@ -13,7 +13,19 @@ def _state_dir() -> Path:
         return Path(override).expanduser().resolve()
 
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent.parent / "server"
+        exe = Path(sys.executable).resolve()
+        candidates = [
+            exe.parent.parent / "server",
+            Path.cwd() / "server",
+            Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1" / "server",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        fallback_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "GOLD_AI" / "server"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir
 
     return Path(__file__).resolve().parent
 
