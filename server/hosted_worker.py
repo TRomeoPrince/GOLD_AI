@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,46 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _kill_terminal_by_path(terminal_path: Path) -> None:
+    escaped = str(terminal_path).replace("'", "''")
+    command = (
+        "$target = '" + escaped + "'; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.ExecutablePath -eq $target } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _launch_terminal(terminal_path: Path) -> subprocess.Popen:
+    return subprocess.Popen(
+        [str(terminal_path), "/portable"],
+        cwd=str(terminal_path.parent),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _attach_mt5(terminal_path: Path) -> None:
+    last_error = None
+    for attempt in range(1, 4):
+        mt5.shutdown()
+        ok = mt5.initialize(
+            str(terminal_path),
+            timeout=120000,
+            portable=True,
+        )
+        if ok:
+            return
+        last_error = mt5.last_error()
+        time.sleep(5 * attempt)
+    raise RuntimeError(f"MT5 IPC attach failed after 3 attempts: {last_error}")
+
+
 def connect_mt5(client_id: int):
     set_hosted_account_status(client_id, "CONNECTING")
     set_hosted_runtime(
@@ -42,18 +83,32 @@ def connect_mt5(client_id: int):
     if not terminal_path or not Path(terminal_path).exists():
         raise RuntimeError("Provisioned MT5 terminal was not found.")
 
+    terminal = Path(terminal_path)
+
+    # Force one clean hosted MT5 instance, then attach IPC before logging in.
+    _kill_terminal_by_path(terminal)
+    time.sleep(1)
+    process = _launch_terminal(terminal)
+    time.sleep(6)
+
+    if process.poll() is not None:
+        raise RuntimeError(
+            f"Hosted MT5 terminal exited during startup with code {process.returncode}."
+        )
+
+    _attach_mt5(terminal)
+
     password = decrypt_secret(str(hosted["password_ciphertext"]))
-    ok = mt5.initialize(
-        terminal_path,
-        login=int(hosted["mt5_login"]),
-        password=password,
-        server=str(hosted["mt5_server"]),
-        timeout=60000,
-        portable=True,
-    )
-    password = ""
-    if not ok:
-        raise RuntimeError(f"MT5 initialize/login failed: {mt5.last_error()}")
+    try:
+        if not mt5.login(
+            int(hosted["mt5_login"]),
+            password=password,
+            server=str(hosted["mt5_server"]),
+            timeout=60000,
+        ):
+            raise RuntimeError(f"MT5 login failed: {mt5.last_error()}")
+    finally:
+        password = ""
 
     account = mt5.account_info()
     if account is None:
