@@ -135,6 +135,24 @@ def start_worker(client_id: int) -> int:
     return int(process.pid)
 
 
+def _stop_terminal_for_record(record: dict) -> None:
+    terminal_path = str(record.get("terminal_path") or "").strip()
+    if not terminal_path:
+        return
+    escaped = terminal_path.replace("'", "''")
+    command = (
+        "$target = '" + escaped + "'; "
+        "Get-CimInstance Win32_Process | "
+        "Where-Object { $_.ExecutablePath -eq $target } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        capture_output=True,
+        text=True,
+    )
+
+
 def stop_worker(client_id: int) -> None:
     record = hosted_account_for_client(client_id)
     if not record:
@@ -146,6 +164,7 @@ def stop_worker(client_id: int) -> None:
             capture_output=True,
             text=True,
         )
+    _stop_terminal_for_record(record)
     set_hosted_runtime(client_id, worker_pid=None)
     if record["status"] == "ACTIVE":
         set_hosted_account_status(client_id, "PROVISIONED")
