@@ -16,3 +16,6 @@ server/*.db
 
 # Hosted MT5 credential vault key (owner machine only)
 server/credential_vault.key
+
+# Per-customer hosted MT5 installations
+server/hosted_mt5/
