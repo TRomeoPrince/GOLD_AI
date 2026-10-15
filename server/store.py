@@ -51,6 +51,7 @@ class ClientRecord:
     risk_per_trade_pct: float = 0.9
     max_open_risk_pct: float = 40.0
     max_daily_loss_pct: float = 5.0
+    execution_mode: str = "CLIENT_PC"
 
 
 def connect() -> sqlite3.Connection:
@@ -69,7 +70,8 @@ def connect() -> sqlite3.Connection:
             created_utc TEXT NOT NULL,
             risk_per_trade_pct REAL NOT NULL DEFAULT 0.9,
             max_open_risk_pct REAL NOT NULL DEFAULT 40.0,
-            max_daily_loss_pct REAL NOT NULL DEFAULT 5.0
+            max_daily_loss_pct REAL NOT NULL DEFAULT 5.0,
+            execution_mode TEXT NOT NULL DEFAULT 'CLIENT_PC'
         )
         """
     )
@@ -78,6 +80,7 @@ def connect() -> sqlite3.Connection:
         "risk_per_trade_pct": "ALTER TABLE clients ADD COLUMN risk_per_trade_pct REAL NOT NULL DEFAULT 0.9",
         "max_open_risk_pct": "ALTER TABLE clients ADD COLUMN max_open_risk_pct REAL NOT NULL DEFAULT 40.0",
         "max_daily_loss_pct": "ALTER TABLE clients ADD COLUMN max_daily_loss_pct REAL NOT NULL DEFAULT 5.0",
+        "execution_mode": "ALTER TABLE clients ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'CLIENT_PC'",
     }
     for name, sql in migrations.items():
         if name not in cols:
@@ -500,3 +503,16 @@ def set_hosted_runtime(
         )
         if cur.rowcount == 0:
             raise ValueError("Hosted account not found.")
+
+
+def set_execution_mode(client_id: int, mode: str) -> None:
+    mode = mode.upper().strip()
+    if mode not in {"CLIENT_PC", "HOSTED"}:
+        raise ValueError("Execution mode must be CLIENT_PC or HOSTED.")
+    with connect() as con:
+        cur = con.execute(
+            "UPDATE clients SET execution_mode=? WHERE id=?",
+            (mode, int(client_id)),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("Client not found.")
