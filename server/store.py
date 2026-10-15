@@ -18,8 +18,19 @@ def _resolve_db_path() -> Path:
         return Path(override).expanduser().resolve()
 
     if getattr(sys, "frozen", False):
-        project_root = Path(sys.executable).resolve().parent.parent
-        return project_root / "server" / "gold_ai_server.db"
+        exe = Path(sys.executable).resolve()
+        candidates = [
+            exe.parent.parent / "server" / "gold_ai_server.db",
+            Path.cwd() / "server" / "gold_ai_server.db",
+            Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1" / "server" / "gold_ai_server.db",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+
+        fallback_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "GOLD_AI" / "server"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir / "gold_ai_server.db"
 
     return Path(__file__).resolve().parent / "gold_ai_server.db"
 
