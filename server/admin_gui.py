@@ -3,7 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from server.hosted_manager import provision_instance, start_worker, stop_worker
+from server.hosted_manager import provision_instance, start_worker, stop_worker, worker_log_path
 from server.store import (
     create_client,
     list_clients,
@@ -362,6 +362,21 @@ class GoldAIAdmin(tk.Tk):
                 messagebox.showerror("Hosted MT5", str(exc), parent=window)
                 load_rows()
 
+        def open_log():
+            client_id = selected_client_id()
+            if client_id is None:
+                return
+            path = worker_log_path(client_id)
+            if not path.exists():
+                messagebox.showinfo(
+                    "Hosted MT5",
+                    "No worker log exists yet for this client.",
+                    parent=window,
+                )
+                return
+            import os
+            os.startfile(str(path))
+
         load_rows()
 
         actions = ttk.Frame(window, padding=(12, 4, 12, 6))
@@ -390,6 +405,11 @@ class GoldAIAdmin(tk.Tk):
             actions,
             text="Stop",
             command=stop_selected,
+        ).pack(side="left", padx=4)
+        ttk.Button(
+            actions,
+            text="Open Log",
+            command=open_log,
         ).pack(side="left", padx=4)
         ttk.Button(
             actions,
