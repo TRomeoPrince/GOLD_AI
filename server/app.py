@@ -188,6 +188,11 @@ def get_next_instruction(authorization: str = Header(default="")) -> TradeInstru
             status_code=403,
             detail=f"Client access is {client.status}.",
         )
+    if client.execution_mode != "CLIENT_PC":
+        raise HTTPException(
+            status_code=403,
+            detail="This client is configured for HOSTED execution.",
+        )
 
     row = next_instruction(client.id)
     if row is None:
