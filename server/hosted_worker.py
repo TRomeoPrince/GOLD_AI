@@ -26,6 +26,14 @@ def utc_now() -> str:
 
 
 def connect_mt5(client_id: int):
+    set_hosted_account_status(client_id, "CONNECTING")
+    set_hosted_runtime(
+        client_id,
+        last_error="",
+        last_seen_utc=utc_now(),
+        account_balance=None,
+        account_equity=None,
+    )
     hosted = hosted_account_secret_for_client(client_id)
     if not hosted:
         raise RuntimeError("Hosted MT5 account not found.")
