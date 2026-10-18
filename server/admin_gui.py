@@ -17,20 +17,48 @@ from server.store import (
 )
 
 
+
+def apply_theme(root):
+    """Task Harbor palette; presentation only, no execution state."""
+    root.configure(background="#F4F7F6")
+    root.option_add("*Font", ("Segoe UI", 10))
+    style = ttk.Style(root)
+    style.theme_use("clam")
+    style.configure(".", background="#F4F7F6", foreground="#172D35", font=("Segoe UI", 10))
+    style.configure("TFrame", background="#F4F7F6")
+    style.configure("TLabel", background="#F4F7F6", foreground="#172D35")
+    style.configure("Muted.TLabel", foreground="#60746B")
+    style.configure("Hero.TLabel", font=("Segoe UI", 27, "bold"), foreground="#176B53")
+    style.configure("Card.TFrame", background="#FFFFFF")
+    style.configure("Card.TLabel", background="#FFFFFF", foreground="#172D35")
+    style.configure("TButton", padding=(12, 9), background="#E3ECE7", foreground="#254D3F", borderwidth=0)
+    style.map("TButton", background=[("active", "#D2E5DC")], foreground=[("disabled", "#73837B")])
+    style.configure("Accent.TButton", background="#176B53", foreground="#FFFFFF")
+    style.map("Accent.TButton", background=[("active", "#11533F"), ("disabled", "#CBD7D0")])
+    style.configure("Danger.TButton", foreground="#9B2525", background="#FBE9E7")
+    style.configure("TEntry", fieldbackground="#FFFFFF", padding=7)
+    style.configure("TLabelframe", background="#F4F7F6", bordercolor="#DCE5E1")
+    style.configure("TLabelframe.Label", foreground="#176B53", font=("Segoe UI", 11, "bold"))
+    style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF", rowheight=36, borderwidth=0)
+    style.configure("Treeview.Heading", background="#E3ECE7", foreground="#254D3F", padding=9, font=("Segoe UI", 10, "bold"))
+    style.map("Treeview", background=[("selected", "#176B53")], foreground=[("selected", "#FFFFFF")])
+    style.configure("TCheckbutton", background="#F4F7F6", padding=6)
+
 class GoldAIAdmin(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("GOLD_AI Admin")
-        self.geometry("1050x620")
-        self.minsize(980, 560)
+        self.geometry("1280x860")
+        self.minsize(1280, 860)
         self.selected_name = ""
+        apply_theme(self)
         self._build()
         self.refresh()
 
     def _build(self):
         top = ttk.Frame(self, padding=14)
         top.pack(fill="x")
-        ttk.Label(top, text="GOLD_AI ADMIN", font=("Segoe UI", 20, "bold")).pack(side="left")
+        ttk.Label(top, text="GOLD_AI  /  Owner workspace", style="Hero.TLabel").pack(side="left")
         self.news_var = tk.BooleanVar(value=news_lock_enabled())
         ttk.Checkbutton(
             top,
@@ -39,11 +67,23 @@ class GoldAIAdmin(tk.Tk):
             command=self.toggle_news_lock,
         ).pack(side="right")
 
+        ttk.Label(self, text="Your clients, execution and risk — one clear workspace.", style="Muted.TLabel").pack(anchor="w", padx=18, pady=(0, 12))
+        summary = ttk.Frame(self, padding=(18, 0, 18, 14))
+        summary.pack(fill="x")
+        self.summary_vars = []
+        for title in ("CLIENTS", "ACTIVE ACCESS", "HOSTED MODE"):
+            card = ttk.Frame(summary, style="Card.TFrame", padding=16)
+            card.pack(side="left", fill="x", expand=True, padx=(0, 12))
+            ttk.Label(card, text=title, style="Card.TLabel").pack(anchor="w")
+            value = tk.StringVar(value="—")
+            self.summary_vars.append(value)
+            ttk.Label(card, textvariable=value, style="Card.TLabel", font=("Segoe UI", 24, "bold")).pack(anchor="w")
+
         body = ttk.Frame(self, padding=(14, 0, 14, 14))
         body.pack(fill="both", expand=True)
 
         cols = ("name", "status", "mode", "mt5", "server", "telegram", "risk", "open", "daily")
-        self.tree = ttk.Treeview(body, columns=cols, show="headings", height=18)
+        self.tree = ttk.Treeview(body, columns=cols, show="headings", height=8)
         headings = {
             "name":"Client","status":"Status","mode":"Execution","mt5":"MT5 Login","server":"MT5 Server",
             "telegram":"Telegram","risk":"Risk/Trade","open":"Max Open","daily":"Daily Loss"
@@ -57,19 +97,23 @@ class GoldAIAdmin(tk.Tk):
 
         buttons = ttk.Frame(body)
         buttons.pack(fill="x", pady=(10, 6))
-        ttk.Button(buttons, text="Add Client", command=self.add_client).pack(side="left")
-        ttk.Button(buttons, text="Activate", command=lambda:self.change_status("ACTIVE")).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Pause", command=lambda:self.change_status("PAUSED")).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Revoke", command=lambda:self.change_status("REVOKED")).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Expire", command=lambda:self.change_status("EXPIRED")).pack(side="left", padx=4)
-        ttk.Button(buttons, text="Copy Pairing Code", command=self.copy_pairing).pack(side="left", padx=(16,4))
-        ttk.Button(buttons, text="Hosted MT5 Requests", command=self.show_hosted_requests).pack(side="left", padx=(16,4))
-        ttk.Button(
-            buttons,
-            text="Use PC Client",
-            command=self.use_pc_mode,
-        ).pack(side="right", padx=4)
-        ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side="right")
+        actions = (
+            ("+ Add Client", self.add_client, "Accent.TButton"),
+            ("Activate", lambda: self.change_status("ACTIVE"), "TButton"),
+            ("Pause", lambda: self.change_status("PAUSED"), "TButton"),
+            ("Revoke", lambda: self.change_status("REVOKED"), "Danger.TButton"),
+            ("Expire", lambda: self.change_status("EXPIRED"), "TButton"),
+            ("Copy Pairing Code", self.copy_pairing, "TButton"),
+            ("Hosted MT5 Requests", self.show_hosted_requests, "TButton"),
+            ("Use PC Client", self.use_pc_mode, "TButton"),
+            ("Refresh", self.refresh, "TButton"),
+        )
+        for index, (label, command, style) in enumerate(actions):
+            ttk.Button(buttons, text=label, command=command, style=style).grid(
+                row=index // 5, column=index % 5, sticky="ew", padx=4, pady=4,
+            )
+        for column in range(5):
+            buttons.columnconfigure(column, weight=1)
 
         risk = ttk.LabelFrame(body, text="Selected Client Risk Limits", padding=10)
         risk.pack(fill="x", pady=(6,0))
@@ -87,7 +131,7 @@ class GoldAIAdmin(tk.Tk):
             box.pack(side="left", padx=(0,18))
             ttk.Label(box, text=label).pack(anchor="w")
             ttk.Entry(box, textvariable=var, width=12).pack(anchor="w")
-        ttk.Button(risk, text="Save Risk Settings", command=self.save_risk).pack(side="left", padx=10, pady=(18,0))
+        ttk.Button(risk, text="Save Risk Settings", style="Accent.TButton", command=self.save_risk).pack(side="left", padx=10, pady=(18,0))
 
         self.status = tk.StringVar(value="Ready.")
         ttk.Label(body, textvariable=self.status).pack(anchor="w", pady=(10,0))
@@ -97,8 +141,15 @@ class GoldAIAdmin(tk.Tk):
         for item in self.tree.get_children():
             self.tree.delete(item)
         selected_item = None
-        for c in list_clients():
-            item = self.tree.insert("", "end", values=(
+        clients = list_clients()
+        for var, value in zip(self.summary_vars, (len(clients), sum(c.status == "ACTIVE" for c in clients), sum(c.execution_mode == "HOSTED" for c in clients))):
+            var.set(str(value))
+        self.tree.tag_configure("ACTIVE", foreground="#176B53")
+        self.tree.tag_configure("PAUSED", foreground="#8A5B0A")
+        self.tree.tag_configure("REVOKED", foreground="#9B2525")
+        self.tree.tag_configure("EXPIRED", foreground="#9B2525")
+        for c in clients:
+            item = self.tree.insert("", "end", tags=(c.status,), values=(
                 c.name, c.status, c.execution_mode, c.mt5_login or "-", c.mt5_server or "-",
                 f"@{c.telegram_username}" if c.telegram_username else "-",
                 f"{c.risk_per_trade_pct:.2f}%",
