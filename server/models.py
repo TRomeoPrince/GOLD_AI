@@ -46,6 +46,11 @@ class MobileOverviewResponse(BaseModel):
     hosted_mt5_status: str = ""
     hosted_mt5_login: Optional[int] = None
     hosted_mt5_server: str = ""
+    subscription_plan: str = "STARTER"
+    subscription_status: str = "TRIAL"
+    subscription_expires_utc: str = ""
+    latest_payment_status: str = ""
+    latest_payment_checkout_url: str = ""
 
 
 class HostedAccountRequest(BaseModel):
@@ -65,3 +70,7 @@ class TradeAckRequest(BaseModel):
     instruction_id: int
     status: str
     message: str = ""
+
+
+class RenewalRequest(BaseModel):
+    plan_code: str = "STARTER"
