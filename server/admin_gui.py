@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from server.client_telegram import send_client_message
 from server.hosted_manager import provision_instance, start_worker, stop_worker, worker_log_path
 from server.store import (
     create_client,
@@ -11,6 +12,8 @@ from server.store import (
     list_hosted_accounts,
     news_lock_enabled,
     set_client_risk,
+    set_subscription,
+    subscription_for_client,
     set_execution_mode,
     set_global_risk_policy,
     set_hosted_account_status,
@@ -67,6 +70,8 @@ class GoldAIAdmin(tk.Tk):
         ttk.Button(buttons, text="Copy Pairing Code", command=self.copy_pairing).pack(side="left", padx=(16,4))
         ttk.Button(buttons, text="Hosted MT5 Requests", command=self.show_hosted_requests).pack(side="left", padx=(16,4))
         ttk.Button(buttons, text="Global Risk Control", command=self.show_global_risk_control).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Message Client", command=self.message_client).pack(side="left", padx=4)
+        ttk.Button(buttons, text="Subscription", command=self.manage_subscription).pack(side="left", padx=4)
         ttk.Button(
             buttons,
             text="Use PC Client",
@@ -221,6 +226,119 @@ class GoldAIAdmin(tk.Tk):
             self.refresh()
         except Exception as exc:
             messagebox.showerror("Risk Settings", str(exc))
+
+    def _selected_client_record(self):
+        if not self.selected_name:
+            messagebox.showwarning("GOLD_AI Admin", "Select a client first.")
+            return None
+        for client in list_clients():
+            if client.name == self.selected_name:
+                return client
+        messagebox.showwarning("GOLD_AI Admin", "Selected client no longer exists.")
+        return None
+
+    def message_client(self):
+        client = self._selected_client_record()
+        if client is None:
+            return
+        if not client.telegram_chat_id:
+            messagebox.showwarning(
+                "Client Messaging",
+                "This client has not linked Telegram yet. Ask them to use /link PAIRING_CODE.",
+            )
+            return
+
+        text = simpledialog.askstring(
+            "Message Client",
+            f"Message to {client.name}:",
+            parent=self,
+        )
+        if not text:
+            return
+        try:
+            send_client_message(int(client.telegram_chat_id), text.strip())
+            self.status.set(f"Telegram message sent to {client.name}.")
+        except Exception as exc:
+            messagebox.showerror("Client Messaging", str(exc))
+
+    def manage_subscription(self):
+        client = self._selected_client_record()
+        if client is None:
+            return
+
+        sub = subscription_for_client(client.id)
+        window = tk.Toplevel(self)
+        window.title(f"Subscription — {client.name}")
+        window.geometry("560x420")
+        window.resizable(False, False)
+
+        frame = ttk.Frame(window, padding=18)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text=f"{client.name} — Subscription",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w", pady=(0, 14))
+
+        plan = tk.StringVar(value=sub.get("plan_code", "STARTER"))
+        status = tk.StringVar(value=sub.get("status", "TRIAL"))
+        starts = tk.StringVar(value=sub.get("starts_utc", ""))
+        expires = tk.StringVar(value=sub.get("expires_utc", ""))
+        auto_renew = tk.BooleanVar(value=bool(sub.get("auto_renew", 0)))
+
+        rows = (
+            ("Plan", plan),
+            ("Status", status),
+            ("Starts UTC", starts),
+            ("Expires UTC", expires),
+        )
+        for label, var in rows:
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=7)
+            ttk.Label(row, text=label, width=18).pack(side="left")
+            ttk.Entry(row, textvariable=var, width=38).pack(side="left", fill="x", expand=True)
+
+        ttk.Checkbutton(
+            frame,
+            text="Auto-renew enabled",
+            variable=auto_renew,
+        ).pack(anchor="w", pady=(12, 8))
+
+        ttk.Label(
+            frame,
+            text=(
+                "Suggested statuses: TRIAL, ACTIVE, PAST_DUE, EXPIRED, CANCELLED. "
+                "Dates should use ISO format, e.g. 2026-11-23T00:00:00+00:00."
+            ),
+            wraplength=500,
+        ).pack(anchor="w", pady=(0, 16))
+
+        def save_subscription():
+            try:
+                saved = set_subscription(
+                    client.id,
+                    plan_code=plan.get(),
+                    status=status.get(),
+                    starts_utc=starts.get().strip(),
+                    expires_utc=expires.get().strip(),
+                    auto_renew=bool(auto_renew.get()),
+                )
+                self.status.set(
+                    f"{client.name} subscription → {saved['plan_code']} / {saved['status']}"
+                )
+                messagebox.showinfo(
+                    "Subscription",
+                    "Subscription saved.",
+                    parent=window,
+                )
+            except Exception as exc:
+                messagebox.showerror("Subscription", str(exc), parent=window)
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Button(buttons, text="Save Subscription", command=save_subscription).pack(side="left")
+        ttk.Button(buttons, text="Close", command=window.destroy).pack(side="right")
 
     def show_global_risk_control(self):
         policy = get_global_risk_policy()
