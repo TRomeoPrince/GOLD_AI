@@ -8,6 +8,7 @@ from .models import (
     ClientStatusResponse,
     HostedAccountRequest,
     MobileOverviewResponse,
+    RenewalRequest,
     TelegramRequest,
     TradeInstructionResponse,
     TradeAckRequest,
@@ -19,9 +20,12 @@ from .store import (
     find_by_pairing_code,
     next_instruction,
     acknowledge_instruction,
+    create_payment_request,
     effective_risk_policy,
     hosted_account_for_client,
+    latest_payment_request,
     news_lock_enabled,
+    subscription_for_client,
     upsert_hosted_account,
 )
 
@@ -122,6 +126,8 @@ def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewRe
     client = _client_from_authorization(authorization)
     hosted = hosted_account_for_client(client.id)
     risk = effective_risk_policy(client)
+    subscription = subscription_for_client(client.id)
+    payment = latest_payment_request(client.id)
     return MobileOverviewResponse(
         allowed=client.status == "ACTIVE",
         display_name=client.name,
@@ -138,7 +144,52 @@ def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewRe
         hosted_mt5_status=(hosted or {}).get("status", ""),
         hosted_mt5_login=(hosted or {}).get("mt5_login"),
         hosted_mt5_server=(hosted or {}).get("mt5_server", ""),
+        subscription_plan=subscription.get("plan_code", "STARTER"),
+        subscription_status=subscription.get("status", "TRIAL"),
+        subscription_expires_utc=subscription.get("expires_utc", ""),
+        latest_payment_status=(payment or {}).get("status", ""),
+        latest_payment_checkout_url=(payment or {}).get("checkout_url", ""),
     )
+
+
+@app.get("/v1/mobile/subscription")
+def mobile_subscription(authorization: str = Header(default="")) -> dict:
+    client = _client_from_authorization(authorization)
+    subscription = subscription_for_client(client.id)
+    payment = latest_payment_request(client.id)
+    return {
+        "subscription": subscription,
+        "latest_payment": payment,
+    }
+
+
+@app.post("/v1/mobile/subscription/renew")
+def mobile_subscription_renew(
+    req: RenewalRequest,
+    authorization: str = Header(default=""),
+) -> dict:
+    client = _client_from_authorization(authorization)
+    current = subscription_for_client(client.id)
+    plan_code = (req.plan_code or current.get("plan_code") or "STARTER").upper().strip()
+
+    request = create_payment_request(
+        client.id,
+        plan_code=plan_code,
+        amount=0.0,
+        currency="USD",
+        provider="UNSET",
+    )
+    return {
+        "ok": True,
+        "payment_request_id": request["id"],
+        "status": request["status"],
+        "plan_code": request["plan_code"],
+        "checkout_url": request["checkout_url"],
+        "message": (
+            "Renewal request created. Checkout will become available after "
+            "the payment provider is configured."
+        ),
+    }
 
 
 @app.post("/v1/mobile/hosted-account")
