@@ -817,6 +817,43 @@ def subscription_for_client(client_id: int) -> dict:
     return ensure_subscription(client_id)
 
 
+def subscription_access(client_id: int) -> dict:
+    sub = subscription_for_client(client_id)
+    status = str(sub.get("status", "TRIAL") or "TRIAL").upper()
+    expires_raw = str(sub.get("expires_utc", "") or "").strip()
+
+    if status in {"PAST_DUE", "EXPIRED", "CANCELLED"}:
+        return {
+            "allowed": False,
+            "reason": f"SUBSCRIPTION_{status}",
+            "subscription": sub,
+        }
+
+    if expires_raw:
+        try:
+            expires = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) >= expires.astimezone(timezone.utc):
+                return {
+                    "allowed": False,
+                    "reason": "SUBSCRIPTION_EXPIRED",
+                    "subscription": sub,
+                }
+        except ValueError:
+            return {
+                "allowed": False,
+                "reason": "SUBSCRIPTION_EXPIRY_INVALID",
+                "subscription": sub,
+            }
+
+    return {
+        "allowed": True,
+        "reason": "OK",
+        "subscription": sub,
+    }
+
+
 def create_payment_request(
     client_id: int,
     *,
