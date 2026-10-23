@@ -25,7 +25,7 @@ from server.store import (
 class GoldAIAdmin(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("GOLD_AI Admin")
+        self.title("GOLD_AI Admin • Risk, Clients & Subscriptions")
         self.geometry("1180x760")
         self.minsize(1080, 680)
         self.selected_name = ""
