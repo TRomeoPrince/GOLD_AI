@@ -6,11 +6,13 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 from server.hosted_manager import provision_instance, start_worker, stop_worker, worker_log_path
 from server.store import (
     create_client,
+    get_global_risk_policy,
     list_clients,
     list_hosted_accounts,
     news_lock_enabled,
     set_client_risk,
     set_execution_mode,
+    set_global_risk_policy,
     set_hosted_account_status,
     set_news_lock,
     set_status,
@@ -21,8 +23,8 @@ class GoldAIAdmin(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("GOLD_AI Admin")
-        self.geometry("1050x620")
-        self.minsize(980, 560)
+        self.geometry("1180x760")
+        self.minsize(1080, 680)
         self.selected_name = ""
         self._build()
         self.refresh()
@@ -64,6 +66,7 @@ class GoldAIAdmin(tk.Tk):
         ttk.Button(buttons, text="Expire", command=lambda:self.change_status("EXPIRED")).pack(side="left", padx=4)
         ttk.Button(buttons, text="Copy Pairing Code", command=self.copy_pairing).pack(side="left", padx=(16,4))
         ttk.Button(buttons, text="Hosted MT5 Requests", command=self.show_hosted_requests).pack(side="left", padx=(16,4))
+        ttk.Button(buttons, text="Global Risk Control", command=self.show_global_risk_control).pack(side="left", padx=4)
         ttk.Button(
             buttons,
             text="Use PC Client",
@@ -71,23 +74,40 @@ class GoldAIAdmin(tk.Tk):
         ).pack(side="right", padx=4)
         ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side="right")
 
-        risk = ttk.LabelFrame(body, text="Selected Client Risk Limits", padding=10)
+        risk = ttk.LabelFrame(body, text="Selected Client Risk Control", padding=10)
         risk.pack(fill="x", pady=(6,0))
 
         self.risk_trade = tk.StringVar(value="0.9")
         self.risk_open = tk.StringVar(value="40")
         self.risk_daily = tk.StringVar(value="5")
+        self.profit_daily = tk.StringVar(value="3")
+        self.risk_trade_enabled = tk.BooleanVar(value=True)
+        self.risk_open_enabled = tk.BooleanVar(value=True)
+        self.risk_daily_enabled = tk.BooleanVar(value=True)
+        self.profit_daily_enabled = tk.BooleanVar(value=False)
 
-        for label, var in (
-            ("Risk / trade (0.1–2%)", self.risk_trade),
-            ("Max overall open risk (5–40%)", self.risk_open),
-            ("Max daily loss (2–10%)", self.risk_daily),
-        ):
+        controls = (
+            ("Risk / trade %", self.risk_trade, self.risk_trade_enabled),
+            ("Max open risk %", self.risk_open, self.risk_open_enabled),
+            ("Max daily loss %", self.risk_daily, self.risk_daily_enabled),
+            ("Daily profit target %", self.profit_daily, self.profit_daily_enabled),
+        )
+        for label, var, enabled_var in controls:
             box = ttk.Frame(risk)
-            box.pack(side="left", padx=(0,18))
-            ttk.Label(box, text=label).pack(anchor="w")
-            ttk.Entry(box, textvariable=var, width=12).pack(anchor="w")
-        ttk.Button(risk, text="Save Risk Settings", command=self.save_risk).pack(side="left", padx=10, pady=(18,0))
+            box.pack(side="left", padx=(0,14))
+            ttk.Checkbutton(box, text=label, variable=enabled_var).pack(anchor="w")
+            ttk.Entry(box, textvariable=var, width=12).pack(anchor="w", pady=(3,0))
+
+        ttk.Button(
+            risk,
+            text="Save Client Policy",
+            command=self.save_risk,
+        ).pack(side="left", padx=10, pady=(18,0))
+
+        ttk.Label(
+            risk,
+            text="Unchecked = inherit owner/global policy. Hard safety ceilings still apply.",
+        ).pack(side="left", padx=(12,0), pady=(18,0))
 
         self.status = tk.StringVar(value="Ready.")
         ttk.Label(body, textvariable=self.status).pack(anchor="w", pady=(10,0))
@@ -123,6 +143,11 @@ class GoldAIAdmin(tk.Tk):
                 self.risk_trade.set(str(c.risk_per_trade_pct))
                 self.risk_open.set(str(c.max_open_risk_pct))
                 self.risk_daily.set(str(c.max_daily_loss_pct))
+                self.profit_daily.set(str(c.daily_profit_target_pct))
+                self.risk_trade_enabled.set(bool(c.risk_per_trade_enabled))
+                self.risk_open_enabled.set(bool(c.max_open_risk_enabled))
+                self.risk_daily_enabled.set(bool(c.max_daily_loss_enabled))
+                self.profit_daily_enabled.set(bool(c.daily_profit_target_enabled))
                 break
 
     def add_client(self):
@@ -186,11 +211,93 @@ class GoldAIAdmin(tk.Tk):
                 float(self.risk_trade.get()),
                 float(self.risk_open.get()),
                 float(self.risk_daily.get()),
+                risk_per_trade_enabled=bool(self.risk_trade_enabled.get()),
+                max_open_risk_enabled=bool(self.risk_open_enabled.get()),
+                max_daily_loss_enabled=bool(self.risk_daily_enabled.get()),
+                daily_profit_target_enabled=bool(self.profit_daily_enabled.get()),
+                daily_profit_target_pct=float(self.profit_daily.get()),
             )
             self.status.set(f"{self.selected_name} risk settings saved.")
             self.refresh()
         except Exception as exc:
             messagebox.showerror("Risk Settings", str(exc))
+
+    def show_global_risk_control(self):
+        policy = get_global_risk_policy()
+
+        window = tk.Toplevel(self)
+        window.title("GOLD_AI Global Risk Control")
+        window.geometry("620x430")
+        window.resizable(False, False)
+
+        frame = ttk.Frame(window, padding=18)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(
+            frame,
+            text="GLOBAL OWNER RISK POLICY",
+            font=("Segoe UI", 16, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            frame,
+            text=(
+                "These limits apply across all clients. A client's enabled custom value "
+                "can only make the policy stricter, never exceed the hard GOLD_AI ceiling."
+            ),
+            wraplength=560,
+        ).pack(anchor="w", pady=(4,14))
+
+        vars_enabled = {
+            "risk": tk.BooleanVar(value=policy["risk_per_trade_enabled"]),
+            "open": tk.BooleanVar(value=policy["max_open_risk_enabled"]),
+            "loss": tk.BooleanVar(value=policy["max_daily_loss_enabled"]),
+            "profit": tk.BooleanVar(value=policy["daily_profit_target_enabled"]),
+        }
+        vars_value = {
+            "risk": tk.StringVar(value=str(policy["risk_per_trade_pct"])),
+            "open": tk.StringVar(value=str(policy["max_open_risk_pct"])),
+            "loss": tk.StringVar(value=str(policy["max_daily_loss_pct"])),
+            "profit": tk.StringVar(value=str(policy["daily_profit_target_pct"])),
+        }
+
+        rows = (
+            ("risk", "Maximum risk per trade", "Hard ceiling: 2%"),
+            ("open", "Maximum overall/open risk", "Hard ceiling: 40%"),
+            ("loss", "Maximum daily loss", "Hard ceiling: 10%"),
+            ("profit", "Daily profit target", "Stops new entries after target"),
+        )
+        for key, label, note in rows:
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=7)
+            ttk.Checkbutton(row, text=label, variable=vars_enabled[key]).pack(side="left")
+            ttk.Entry(row, textvariable=vars_value[key], width=12).pack(side="left", padx=12)
+            ttk.Label(row, text=f"%   {note}").pack(side="left")
+
+        def save_global():
+            try:
+                set_global_risk_policy(
+                    risk_per_trade_enabled=bool(vars_enabled["risk"].get()),
+                    risk_per_trade_pct=float(vars_value["risk"].get()),
+                    max_open_risk_enabled=bool(vars_enabled["open"].get()),
+                    max_open_risk_pct=float(vars_value["open"].get()),
+                    max_daily_loss_enabled=bool(vars_enabled["loss"].get()),
+                    max_daily_loss_pct=float(vars_value["loss"].get()),
+                    daily_profit_target_enabled=bool(vars_enabled["profit"].get()),
+                    daily_profit_target_pct=float(vars_value["profit"].get()),
+                )
+                self.status.set("Global risk policy saved.")
+                messagebox.showinfo(
+                    "GOLD_AI Risk Control",
+                    "Global owner risk policy saved.",
+                    parent=window,
+                )
+            except Exception as exc:
+                messagebox.showerror("Risk Control", str(exc), parent=window)
+
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(20,0))
+        ttk.Button(buttons, text="Save Global Policy", command=save_global).pack(side="left")
+        ttk.Button(buttons, text="Close", command=window.destroy).pack(side="right")
 
     def show_hosted_requests(self):
         window = tk.Toplevel(self)
