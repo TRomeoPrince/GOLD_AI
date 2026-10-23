@@ -25,6 +25,7 @@ from .store import (
     hosted_account_for_client,
     latest_payment_request,
     news_lock_enabled,
+    subscription_access,
     subscription_for_client,
     upsert_hosted_account,
 )
@@ -127,6 +128,7 @@ def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewRe
     hosted = hosted_account_for_client(client.id)
     risk = effective_risk_policy(client)
     subscription = subscription_for_client(client.id)
+    subscription_state = subscription_access(client.id)
     payment = latest_payment_request(client.id)
     return MobileOverviewResponse(
         allowed=client.status == "ACTIVE",
@@ -149,6 +151,8 @@ def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewRe
         subscription_expires_utc=subscription.get("expires_utc", ""),
         latest_payment_status=(payment or {}).get("status", ""),
         latest_payment_checkout_url=(payment or {}).get("checkout_url", ""),
+        subscription_trading_allowed=bool(subscription_state["allowed"]),
+        subscription_access_reason=str(subscription_state["reason"]),
     )
 
 
@@ -253,6 +257,16 @@ def get_next_instruction(authorization: str = Header(default="")) -> TradeInstru
         raise HTTPException(
             status_code=403,
             detail="This client is configured for HOSTED execution.",
+        )
+
+    access = subscription_access(client.id)
+    if not access["allowed"]:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Subscription inactive or expired. Renew from the GOLD_AI mobile app. "
+                f"Reason: {access['reason']}."
+            ),
         )
 
     row = next_instruction(client.id)
