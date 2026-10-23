@@ -20,6 +20,7 @@ from .store import (
     next_instruction,
     set_hosted_account_status,
     set_hosted_runtime,
+    subscription_access,
 )
 
 
@@ -142,6 +143,11 @@ def run(client_id: int) -> None:
                 continue
             if client.execution_mode != "HOSTED":
                 raise RuntimeError("Client execution mode is no longer HOSTED.")
+
+            access = subscription_access(client_id)
+            if not access["allowed"]:
+                time.sleep(2)
+                continue
 
             info = mt5.account_info()
             if info is None:
