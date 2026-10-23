@@ -19,6 +19,7 @@ from .store import (
     find_by_pairing_code,
     next_instruction,
     acknowledge_instruction,
+    effective_risk_policy,
     hosted_account_for_client,
     news_lock_enabled,
     upsert_hosted_account,
@@ -114,6 +115,7 @@ def client_status(authorization: str = Header(default="")) -> ClientStatusRespon
 def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewResponse:
     client = _client_from_authorization(authorization)
     hosted = hosted_account_for_client(client.id)
+    risk = effective_risk_policy(client)
     return MobileOverviewResponse(
         allowed=client.status == "ACTIVE",
         display_name=client.name,
@@ -121,9 +123,11 @@ def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewRe
         mt5_login=client.mt5_login,
         mt5_server=client.mt5_server,
         telegram_username=client.telegram_username,
-        risk_per_trade_pct=client.risk_per_trade_pct,
-        max_open_risk_pct=client.max_open_risk_pct,
-        max_daily_loss_pct=client.max_daily_loss_pct,
+        risk_per_trade_pct=risk["risk_per_trade_pct"],
+        max_open_risk_pct=risk["max_open_risk_pct"],
+        max_daily_loss_pct=risk["max_daily_loss_pct"],
+        daily_profit_target_enabled=risk["daily_profit_target_enabled"],
+        daily_profit_target_pct=risk["daily_profit_target_pct"],
         news_lock=news_lock_enabled(),
         hosted_mt5_status=(hosted or {}).get("status", ""),
         hosted_mt5_login=(hosted or {}).get("mt5_login"),
