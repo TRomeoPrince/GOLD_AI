@@ -111,6 +111,30 @@ def _open_risk_pct() -> float:
     return 100.0 * total / equity
 
 
+def _daily_profit_pct() -> float:
+    account = mt5.account_info()
+    if account is None:
+        return 0.0
+
+    now = datetime.now()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    deals = mt5.history_deals_get(start, now) or ()
+
+    realized = 0.0
+    for d in deals:
+        realized += float(getattr(d, "profit", 0.0) or 0.0)
+        realized += float(getattr(d, "commission", 0.0) or 0.0)
+        realized += float(getattr(d, "swap", 0.0) or 0.0)
+        realized += float(getattr(d, "fee", 0.0) or 0.0)
+
+    start_balance = float(account.balance) - realized
+    if start_balance <= 0:
+        return 0.0
+
+    profit_cash = max(0.0, float(account.equity) - start_balance)
+    return 100.0 * profit_cash / start_balance
+
+
 def _daily_loss_pct() -> float:
     account = mt5.account_info()
     if account is None:
@@ -140,6 +164,8 @@ def execute_instruction(
     risk_per_trade_pct: float,
     max_open_risk_pct: float,
     max_daily_loss_pct: float,
+    daily_profit_target_enabled: bool = False,
+    daily_profit_target_pct: float = 0.0,
 ) -> ExecutionResult:
     terminal = mt5.terminal_info()
     account = mt5.account_info()
@@ -147,6 +173,15 @@ def execute_instruction(
         raise RuntimeError("MT5 terminal/account unavailable.")
     if not bool(getattr(terminal, "trade_allowed", False)):
         return ExecutionResult(False, None, "Algo Trading is disabled.")
+
+    if bool(daily_profit_target_enabled):
+        daily_profit = _daily_profit_pct()
+        if daily_profit >= float(daily_profit_target_pct):
+            return ExecutionResult(
+                False,
+                None,
+                f"DAILY_PROFIT_TARGET_REACHED: {daily_profit:.2f}% >= {float(daily_profit_target_pct):.2f}%.",
+            )
 
     daily_loss = _daily_loss_pct()
     if daily_loss >= float(max_daily_loss_pct):
