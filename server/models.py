@@ -51,6 +51,8 @@ class MobileOverviewResponse(BaseModel):
     subscription_expires_utc: str = ""
     latest_payment_status: str = ""
     latest_payment_checkout_url: str = ""
+    subscription_trading_allowed: bool = True
+    subscription_access_reason: str = "OK"
 
 
 class HostedAccountRequest(BaseModel):
