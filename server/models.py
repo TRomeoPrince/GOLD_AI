@@ -40,6 +40,8 @@ class MobileOverviewResponse(BaseModel):
     risk_per_trade_pct: float
     max_open_risk_pct: float
     max_daily_loss_pct: float
+    daily_profit_target_enabled: bool = False
+    daily_profit_target_pct: float = 0.0
     news_lock: bool
     hosted_mt5_status: str = ""
     hosted_mt5_login: Optional[int] = None
