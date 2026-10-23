@@ -13,6 +13,7 @@ from server.store import (
     news_lock_enabled,
     set_client_risk,
     set_subscription,
+    subscription_access,
     subscription_for_client,
     set_execution_mode,
     set_global_risk_policy,
@@ -47,13 +48,13 @@ class GoldAIAdmin(tk.Tk):
         body = ttk.Frame(self, padding=(14, 0, 14, 14))
         body.pack(fill="both", expand=True)
 
-        cols = ("name", "status", "mode", "mt5", "server", "telegram", "risk", "open", "daily")
+        cols = ("name", "status", "subscription", "mode", "mt5", "server", "telegram", "risk", "open", "daily", "profit")
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=18)
         headings = {
-            "name":"Client","status":"Status","mode":"Execution","mt5":"MT5 Login","server":"MT5 Server",
-            "telegram":"Telegram","risk":"Risk/Trade","open":"Max Open","daily":"Daily Loss"
+            "name":"Client","status":"Status","subscription":"Subscription","mode":"Execution","mt5":"MT5 Login","server":"MT5 Server",
+            "telegram":"Telegram","risk":"Risk/Trade","open":"Max Open","daily":"Daily Loss","profit":"Daily Target"
         }
-        widths = {"name":120,"status":85,"mode":90,"mt5":100,"server":145,"telegram":115,"risk":80,"open":80,"daily":80}
+        widths = {"name":115,"status":80,"subscription":95,"mode":90,"mt5":95,"server":135,"telegram":105,"risk":75,"open":75,"daily":75,"profit":80}
         for c in cols:
             self.tree.heading(c, text=headings[c])
             self.tree.column(c, width=widths[c], anchor="center")
@@ -123,12 +124,20 @@ class GoldAIAdmin(tk.Tk):
             self.tree.delete(item)
         selected_item = None
         for c in list_clients():
+            sub_state = subscription_access(c.id)
+            sub = sub_state["subscription"]
             item = self.tree.insert("", "end", values=(
-                c.name, c.status, c.execution_mode, c.mt5_login or "-", c.mt5_server or "-",
+                c.name,
+                c.status,
+                f"{sub.get('plan_code','STARTER')} / {sub.get('status','TRIAL')}",
+                c.execution_mode,
+                c.mt5_login or "-",
+                c.mt5_server or "-",
                 f"@{c.telegram_username}" if c.telegram_username else "-",
                 f"{c.risk_per_trade_pct:.2f}%",
                 f"{c.max_open_risk_pct:.1f}%",
                 f"{c.max_daily_loss_pct:.1f}%",
+                f"{c.daily_profit_target_pct:.1f}%" if c.daily_profit_target_enabled else "OFF",
             ))
             if c.name == current:
                 selected_item = item
