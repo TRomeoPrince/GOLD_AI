@@ -51,6 +51,11 @@ class ClientRecord:
     risk_per_trade_pct: float = 0.9
     max_open_risk_pct: float = 40.0
     max_daily_loss_pct: float = 5.0
+    risk_per_trade_enabled: int = 1
+    max_open_risk_enabled: int = 1
+    max_daily_loss_enabled: int = 1
+    daily_profit_target_enabled: int = 0
+    daily_profit_target_pct: float = 3.0
     execution_mode: str = "CLIENT_PC"
 
 
@@ -71,6 +76,11 @@ def connect() -> sqlite3.Connection:
             risk_per_trade_pct REAL NOT NULL DEFAULT 0.9,
             max_open_risk_pct REAL NOT NULL DEFAULT 40.0,
             max_daily_loss_pct REAL NOT NULL DEFAULT 5.0,
+            risk_per_trade_enabled INTEGER NOT NULL DEFAULT 1,
+            max_open_risk_enabled INTEGER NOT NULL DEFAULT 1,
+            max_daily_loss_enabled INTEGER NOT NULL DEFAULT 1,
+            daily_profit_target_enabled INTEGER NOT NULL DEFAULT 0,
+            daily_profit_target_pct REAL NOT NULL DEFAULT 3.0,
             execution_mode TEXT NOT NULL DEFAULT 'CLIENT_PC'
         )
         """
@@ -80,6 +90,11 @@ def connect() -> sqlite3.Connection:
         "risk_per_trade_pct": "ALTER TABLE clients ADD COLUMN risk_per_trade_pct REAL NOT NULL DEFAULT 0.9",
         "max_open_risk_pct": "ALTER TABLE clients ADD COLUMN max_open_risk_pct REAL NOT NULL DEFAULT 40.0",
         "max_daily_loss_pct": "ALTER TABLE clients ADD COLUMN max_daily_loss_pct REAL NOT NULL DEFAULT 5.0",
+        "risk_per_trade_enabled": "ALTER TABLE clients ADD COLUMN risk_per_trade_enabled INTEGER NOT NULL DEFAULT 1",
+        "max_open_risk_enabled": "ALTER TABLE clients ADD COLUMN max_open_risk_enabled INTEGER NOT NULL DEFAULT 1",
+        "max_daily_loss_enabled": "ALTER TABLE clients ADD COLUMN max_daily_loss_enabled INTEGER NOT NULL DEFAULT 1",
+        "daily_profit_target_enabled": "ALTER TABLE clients ADD COLUMN daily_profit_target_enabled INTEGER NOT NULL DEFAULT 0",
+        "daily_profit_target_pct": "ALTER TABLE clients ADD COLUMN daily_profit_target_pct REAL NOT NULL DEFAULT 3.0",
         "execution_mode": "ALTER TABLE clients ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'CLIENT_PC'",
     }
     for name, sql in migrations.items():
@@ -156,9 +171,22 @@ def connect() -> sqlite3.Connection:
         )
         """
     )
-    con.execute(
-        "INSERT OR IGNORE INTO server_settings(key,value) VALUES('news_lock','0')"
-    )
+    defaults = {
+        "news_lock": "0",
+        "global_risk_per_trade_enabled": "1",
+        "global_risk_per_trade_pct": "2.0",
+        "global_max_open_risk_enabled": "1",
+        "global_max_open_risk_pct": "40.0",
+        "global_max_daily_loss_enabled": "1",
+        "global_max_daily_loss_pct": "10.0",
+        "global_daily_profit_target_enabled": "0",
+        "global_daily_profit_target_pct": "3.0",
+    }
+    for key, value in defaults.items():
+        con.execute(
+            "INSERT OR IGNORE INTO server_settings(key,value) VALUES(?,?)",
+            (key, value),
+        )
     con.commit()
     return con
 
@@ -195,29 +223,165 @@ def set_status(name: str, status: str) -> None:
             raise ValueError(f"Unknown client: {name}")
 
 
-def set_client_risk(name: str, risk_per_trade_pct: float, max_open_risk_pct: float, max_daily_loss_pct: float) -> ClientRecord:
+def set_client_risk(
+    name: str,
+    risk_per_trade_pct: float,
+    max_open_risk_pct: float,
+    max_daily_loss_pct: float,
+    *,
+    risk_per_trade_enabled: bool = True,
+    max_open_risk_enabled: bool = True,
+    max_daily_loss_enabled: bool = True,
+    daily_profit_target_enabled: bool = False,
+    daily_profit_target_pct: float = 3.0,
+) -> ClientRecord:
     risk_per_trade_pct = float(risk_per_trade_pct)
     max_open_risk_pct = float(max_open_risk_pct)
     max_daily_loss_pct = float(max_daily_loss_pct)
+    daily_profit_target_pct = float(daily_profit_target_pct)
+
     if not 0.1 <= risk_per_trade_pct <= 2.0:
         raise ValueError("Risk per trade must be between 0.1% and 2.0%.")
     if not 5.0 <= max_open_risk_pct <= 40.0:
         raise ValueError("Max overall open risk must be between 5% and 40%.")
     if not 2.0 <= max_daily_loss_pct <= 10.0:
         raise ValueError("Max daily loss must be between 2% and 10%.")
+    if daily_profit_target_pct <= 0:
+        raise ValueError("Daily profit target must be greater than 0%.")
+
     with connect() as con:
         cur = con.execute(
             """
             UPDATE clients
-            SET risk_per_trade_pct=?, max_open_risk_pct=?, max_daily_loss_pct=?
+            SET risk_per_trade_pct=?, max_open_risk_pct=?, max_daily_loss_pct=?,
+                risk_per_trade_enabled=?, max_open_risk_enabled=?,
+                max_daily_loss_enabled=?, daily_profit_target_enabled=?,
+                daily_profit_target_pct=?
             WHERE name=?
             """,
-            (risk_per_trade_pct, max_open_risk_pct, max_daily_loss_pct, name.strip()),
+            (
+                risk_per_trade_pct,
+                max_open_risk_pct,
+                max_daily_loss_pct,
+                1 if risk_per_trade_enabled else 0,
+                1 if max_open_risk_enabled else 0,
+                1 if max_daily_loss_enabled else 0,
+                1 if daily_profit_target_enabled else 0,
+                daily_profit_target_pct,
+                name.strip(),
+            ),
         )
         if cur.rowcount == 0:
             raise ValueError(f"Unknown client: {name}")
         row = con.execute("SELECT * FROM clients WHERE name=?", (name.strip(),)).fetchone()
     return _client(row)
+
+
+def get_global_risk_policy() -> dict:
+    with connect() as con:
+        rows = con.execute(
+            "SELECT key,value FROM server_settings WHERE key LIKE 'global_%'"
+        ).fetchall()
+    values = {str(row["key"]): str(row["value"]) for row in rows}
+    return {
+        "risk_per_trade_enabled": values.get("global_risk_per_trade_enabled", "1") == "1",
+        "risk_per_trade_pct": float(values.get("global_risk_per_trade_pct", "2.0")),
+        "max_open_risk_enabled": values.get("global_max_open_risk_enabled", "1") == "1",
+        "max_open_risk_pct": float(values.get("global_max_open_risk_pct", "40.0")),
+        "max_daily_loss_enabled": values.get("global_max_daily_loss_enabled", "1") == "1",
+        "max_daily_loss_pct": float(values.get("global_max_daily_loss_pct", "10.0")),
+        "daily_profit_target_enabled": values.get("global_daily_profit_target_enabled", "0") == "1",
+        "daily_profit_target_pct": float(values.get("global_daily_profit_target_pct", "3.0")),
+    }
+
+
+def set_global_risk_policy(
+    *,
+    risk_per_trade_enabled: bool,
+    risk_per_trade_pct: float,
+    max_open_risk_enabled: bool,
+    max_open_risk_pct: float,
+    max_daily_loss_enabled: bool,
+    max_daily_loss_pct: float,
+    daily_profit_target_enabled: bool,
+    daily_profit_target_pct: float,
+) -> dict:
+    risk_per_trade_pct = float(risk_per_trade_pct)
+    max_open_risk_pct = float(max_open_risk_pct)
+    max_daily_loss_pct = float(max_daily_loss_pct)
+    daily_profit_target_pct = float(daily_profit_target_pct)
+
+    if not 0.1 <= risk_per_trade_pct <= 2.0:
+        raise ValueError("Global risk per trade must be between 0.1% and 2.0%.")
+    if not 5.0 <= max_open_risk_pct <= 40.0:
+        raise ValueError("Global max open risk must be between 5% and 40%.")
+    if not 2.0 <= max_daily_loss_pct <= 10.0:
+        raise ValueError("Global daily loss must be between 2% and 10%.")
+    if daily_profit_target_pct <= 0:
+        raise ValueError("Global daily profit target must be greater than 0%.")
+
+    settings = {
+        "global_risk_per_trade_enabled": "1" if risk_per_trade_enabled else "0",
+        "global_risk_per_trade_pct": str(risk_per_trade_pct),
+        "global_max_open_risk_enabled": "1" if max_open_risk_enabled else "0",
+        "global_max_open_risk_pct": str(max_open_risk_pct),
+        "global_max_daily_loss_enabled": "1" if max_daily_loss_enabled else "0",
+        "global_max_daily_loss_pct": str(max_daily_loss_pct),
+        "global_daily_profit_target_enabled": "1" if daily_profit_target_enabled else "0",
+        "global_daily_profit_target_pct": str(daily_profit_target_pct),
+    }
+    with connect() as con:
+        for key, value in settings.items():
+            con.execute(
+                "INSERT INTO server_settings(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+    return get_global_risk_policy()
+
+
+def effective_risk_policy(client: ClientRecord) -> dict:
+    global_policy = get_global_risk_policy()
+
+    risk_candidates = [2.0]
+    if global_policy["risk_per_trade_enabled"]:
+        risk_candidates.append(float(global_policy["risk_per_trade_pct"]))
+    if bool(client.risk_per_trade_enabled):
+        risk_candidates.append(float(client.risk_per_trade_pct))
+
+    open_candidates = [40.0]
+    if global_policy["max_open_risk_enabled"]:
+        open_candidates.append(float(global_policy["max_open_risk_pct"]))
+    if bool(client.max_open_risk_enabled):
+        open_candidates.append(float(client.max_open_risk_pct))
+
+    loss_candidates = [10.0]
+    if global_policy["max_daily_loss_enabled"]:
+        loss_candidates.append(float(global_policy["max_daily_loss_pct"]))
+    if bool(client.max_daily_loss_enabled):
+        loss_candidates.append(float(client.max_daily_loss_pct))
+
+    if bool(client.daily_profit_target_enabled):
+        profit_enabled = True
+        profit_target = float(client.daily_profit_target_pct)
+        profit_source = "CLIENT"
+    elif global_policy["daily_profit_target_enabled"]:
+        profit_enabled = True
+        profit_target = float(global_policy["daily_profit_target_pct"])
+        profit_source = "GLOBAL"
+    else:
+        profit_enabled = False
+        profit_target = 0.0
+        profit_source = "OFF"
+
+    return {
+        "risk_per_trade_pct": min(risk_candidates),
+        "max_open_risk_pct": min(open_candidates),
+        "max_daily_loss_pct": min(loss_candidates),
+        "daily_profit_target_enabled": profit_enabled,
+        "daily_profit_target_pct": profit_target,
+        "daily_profit_target_source": profit_source,
+    }
 
 
 def find_by_pairing_code(pairing_code: str) -> ClientRecord | None:
