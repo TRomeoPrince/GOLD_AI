@@ -111,6 +111,12 @@ def client_status(authorization: str = Header(default="")) -> ClientStatusRespon
     )
 
 
+@app.get("/v1/client/risk-policy")
+def client_risk_policy(authorization: str = Header(default="")) -> dict:
+    client = _client_from_authorization(authorization)
+    return effective_risk_policy(client)
+
+
 @app.get("/v1/mobile/overview", response_model=MobileOverviewResponse)
 def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewResponse:
     client = _client_from_authorization(authorization)
