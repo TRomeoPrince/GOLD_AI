@@ -15,6 +15,7 @@ from .hosted_executor import execute_instruction
 from .store import (
     acknowledge_instruction,
     client_by_id,
+    effective_risk_policy,
     hosted_account_secret_for_client,
     next_instruction,
     set_hosted_account_status,
@@ -166,11 +167,14 @@ def run(client_id: int) -> None:
                         payload.get("message", "Hosted remote link test received.")
                     )
                 else:
+                    policy = effective_risk_policy(client)
                     result = execute_instruction(
                         payload,
-                        client.risk_per_trade_pct,
-                        client.max_open_risk_pct,
-                        client.max_daily_loss_pct,
+                        policy["risk_per_trade_pct"],
+                        policy["max_open_risk_pct"],
+                        policy["max_daily_loss_pct"],
+                        policy["daily_profit_target_enabled"],
+                        policy["daily_profit_target_pct"],
                     )
                     ack_status = "EXECUTED" if result.sent else "REJECTED"
                     ack_message = (
