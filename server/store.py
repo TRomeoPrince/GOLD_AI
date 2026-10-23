@@ -47,6 +47,7 @@ class ClientRecord:
     mt5_login: Optional[int]
     mt5_server: str
     telegram_username: str
+    telegram_chat_id: Optional[int]
     created_utc: str
     risk_per_trade_pct: float = 0.9
     max_open_risk_pct: float = 40.0
@@ -72,6 +73,7 @@ def connect() -> sqlite3.Connection:
             mt5_login INTEGER,
             mt5_server TEXT NOT NULL DEFAULT '',
             telegram_username TEXT NOT NULL DEFAULT '',
+            telegram_chat_id INTEGER,
             created_utc TEXT NOT NULL,
             risk_per_trade_pct REAL NOT NULL DEFAULT 0.9,
             max_open_risk_pct REAL NOT NULL DEFAULT 40.0,
@@ -87,6 +89,7 @@ def connect() -> sqlite3.Connection:
     )
     cols = {row["name"] for row in con.execute("PRAGMA table_info(clients)").fetchall()}
     migrations = {
+        "telegram_chat_id": "ALTER TABLE clients ADD COLUMN telegram_chat_id INTEGER",
         "risk_per_trade_pct": "ALTER TABLE clients ADD COLUMN risk_per_trade_pct REAL NOT NULL DEFAULT 0.9",
         "max_open_risk_pct": "ALTER TABLE clients ADD COLUMN max_open_risk_pct REAL NOT NULL DEFAULT 40.0",
         "max_daily_loss_pct": "ALTER TABLE clients ADD COLUMN max_daily_loss_pct REAL NOT NULL DEFAULT 5.0",
@@ -163,6 +166,39 @@ def connect() -> sqlite3.Connection:
         if name not in hosted_cols:
             con.execute(sql)
 
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            client_id INTEGER PRIMARY KEY,
+            plan_code TEXT NOT NULL DEFAULT 'STARTER',
+            status TEXT NOT NULL DEFAULT 'TRIAL',
+            starts_utc TEXT NOT NULL DEFAULT '',
+            expires_utc TEXT NOT NULL DEFAULT '',
+            auto_renew INTEGER NOT NULL DEFAULT 0,
+            updated_utc TEXT NOT NULL,
+            FOREIGN KEY(client_id) REFERENCES clients(id)
+        )
+        """
+    )
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS payment_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id INTEGER NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'RENEWAL',
+            plan_code TEXT NOT NULL,
+            amount REAL NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'USD',
+            provider TEXT NOT NULL DEFAULT 'UNSET',
+            provider_reference TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            checkout_url TEXT NOT NULL DEFAULT '',
+            created_utc TEXT NOT NULL,
+            updated_utc TEXT NOT NULL,
+            FOREIGN KEY(client_id) REFERENCES clients(id)
+        )
+        """
+    )
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS server_settings (
@@ -680,3 +716,154 @@ def set_execution_mode(client_id: int, mode: str) -> None:
         )
         if cur.rowcount == 0:
             raise ValueError("Client not found.")
+
+
+def link_telegram_chat(pairing_code: str, telegram_chat_id: int, telegram_username: str = "") -> ClientRecord:
+    client = find_by_pairing_code(pairing_code)
+    if client is None:
+        raise ValueError("Invalid pairing code.")
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE clients
+            SET telegram_chat_id=?, telegram_username=?
+            WHERE id=?
+            """,
+            (
+                int(telegram_chat_id),
+                telegram_username.strip().lstrip("@"),
+                int(client.id),
+            ),
+        )
+        row = con.execute("SELECT * FROM clients WHERE id=?", (client.id,)).fetchone()
+    return _client(row)
+
+
+def client_by_telegram_chat(telegram_chat_id: int) -> ClientRecord | None:
+    with connect() as con:
+        row = con.execute(
+            "SELECT * FROM clients WHERE telegram_chat_id=?",
+            (int(telegram_chat_id),),
+        ).fetchone()
+    return _client(row)
+
+
+def ensure_subscription(client_id: int) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as con:
+        con.execute(
+            """
+            INSERT OR IGNORE INTO subscriptions(
+                client_id, plan_code, status, starts_utc, expires_utc, auto_renew, updated_utc
+            )
+            VALUES(?, 'STARTER', 'TRIAL', '', '', 0, ?)
+            """,
+            (int(client_id), now),
+        )
+        row = con.execute(
+            "SELECT * FROM subscriptions WHERE client_id=?",
+            (int(client_id),),
+        ).fetchone()
+    return dict(row)
+
+
+def set_subscription(
+    client_id: int,
+    *,
+    plan_code: str,
+    status: str,
+    starts_utc: str,
+    expires_utc: str,
+    auto_renew: bool = False,
+) -> dict:
+    plan_code = plan_code.upper().strip()
+    status = status.upper().strip()
+    if status not in {"TRIAL", "ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED"}:
+        raise ValueError("Invalid subscription status.")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as con:
+        con.execute(
+            """
+            INSERT INTO subscriptions(
+                client_id, plan_code, status, starts_utc, expires_utc, auto_renew, updated_utc
+            )
+            VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(client_id) DO UPDATE SET
+                plan_code=excluded.plan_code,
+                status=excluded.status,
+                starts_utc=excluded.starts_utc,
+                expires_utc=excluded.expires_utc,
+                auto_renew=excluded.auto_renew,
+                updated_utc=excluded.updated_utc
+            """,
+            (
+                int(client_id),
+                plan_code,
+                status,
+                starts_utc,
+                expires_utc,
+                1 if auto_renew else 0,
+                now,
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM subscriptions WHERE client_id=?",
+            (int(client_id),),
+        ).fetchone()
+    return dict(row)
+
+
+def subscription_for_client(client_id: int) -> dict:
+    return ensure_subscription(client_id)
+
+
+def create_payment_request(
+    client_id: int,
+    *,
+    plan_code: str,
+    amount: float,
+    currency: str = "USD",
+    provider: str = "UNSET",
+    checkout_url: str = "",
+    provider_reference: str = "",
+) -> dict:
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO payment_requests(
+                client_id, kind, plan_code, amount, currency, provider,
+                provider_reference, status, checkout_url, created_utc, updated_utc
+            )
+            VALUES(?, 'RENEWAL', ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?)
+            """,
+            (
+                int(client_id),
+                plan_code.upper().strip(),
+                float(amount),
+                currency.upper().strip(),
+                provider.upper().strip(),
+                provider_reference,
+                checkout_url,
+                now,
+                now,
+            ),
+        )
+        row = con.execute(
+            "SELECT * FROM payment_requests WHERE id=?",
+            (cur.lastrowid,),
+        ).fetchone()
+    return dict(row)
+
+
+def latest_payment_request(client_id: int) -> dict | None:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT * FROM payment_requests
+            WHERE client_id=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (int(client_id),),
+        ).fetchone()
+    return dict(row) if row else None
