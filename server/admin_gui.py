@@ -30,6 +30,8 @@ class GoldAIAdmin(tk.Tk):
         self.geometry("1180x760")
         self.minsize(1080, 680)
         self.services = services
+        self.control_busy = False
+        self.closing = False
         self.selected_name = ""
         self._build()
         self.refresh()
@@ -37,6 +39,10 @@ class GoldAIAdmin(tk.Tk):
         self.after(500, self.update_services)
 
     def close_app(self):
+        self.closing = True
+        if self.control_busy:
+            self.after(100, self.close_app)
+            return
         self.withdraw()
         # Leave Tk responsive while network requests finish and children stop.
         import threading
@@ -45,6 +51,44 @@ class GoldAIAdmin(tk.Tk):
                 self.services.stop()
             self.after(0, self.destroy)
         threading.Thread(target=stop, daemon=True).start()
+
+    def run_control(self, action):
+        if self.control_busy or self.closing:
+            return
+        import threading
+        self.control_busy = True
+        for button in self.control_buttons:
+            button.configure(state="disabled")
+        def work():
+            try:
+                result = action()
+            except Exception as exc:
+                result = str(exc)
+            self.after(0, lambda: finish(result))
+        def finish(result):
+            self.control_busy = False
+            self.status.set(result or "Done.")
+            for button in self.control_buttons:
+                button.configure(state="normal")
+        threading.Thread(target=work, daemon=True).start()
+
+    def start_trading(self):
+        def start():
+            self.services.start()
+            if "stack" in self.services.errors:
+                return self.services.errors["stack"]
+            return "Automated trading starting. Valid signals, client authorization, MT5 and existing risk/news checks still apply."
+        self.run_control(start)
+
+    def stop_trading(self):
+        def stop():
+            self.services.stop_named(("signal_engine",))
+            return "Signal engine stopped. Existing positions and already queued instructions are unchanged."
+        self.run_control(stop)
+
+    def start_ngrok(self):
+        from server.ngrok_start import start_ngrok
+        self.run_control(lambda: start_ngrok(self.services.logs, self.services.port))
 
     def update_services(self):
         if self.services:
@@ -65,12 +109,16 @@ class GoldAIAdmin(tk.Tk):
 
         service_bar = ttk.Frame(self, padding=(14, 0, 14, 8))
         service_bar.pack(fill="x")
-        self.service_status = tk.StringVar(value="Starting services...")
+        self.service_status = tk.StringVar(value="Starting API and Telegram; automated trading waits for Start.")
         ttk.Label(service_bar, textvariable=self.service_status, wraplength=1100).pack(anchor="w")
         if self.services:
             import os
             ttk.Button(service_bar, text="Open service logs", command=lambda: os.startfile(str(self.services.logs))).pack(side="left")
-            ttk.Button(service_bar, text="Retry stopped services", command=self.services.start).pack(side="left", padx=8)
+            self.control_buttons = []
+            for label, action in (("Start Automated Trading", self.start_trading), ("Stop Automated Trading", self.stop_trading), ("Start ngrok", self.start_ngrok)):
+                button = ttk.Button(service_bar, text=label, command=action)
+                button.pack(side="left", padx=6)
+                self.control_buttons.append(button)
         ttk.Label(service_bar, text="Shared ngrok runs separately").pack(side="left")
 
         body = ttk.Frame(self, padding=(14, 0, 14, 14))

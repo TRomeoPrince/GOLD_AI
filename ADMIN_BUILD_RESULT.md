@@ -2,15 +2,15 @@
 
 Owner checkout: C:\Users\USER\Desktop\Bots\Forex\AMD1
 
-Artifact: dist/GOLD_AI_Admin.exe
+Artifact: dist_buttons/GOLD_AI_Admin.exe (the running original was left untouched)
 
 Build: PASS, PyInstaller 6.22.3, Python 3.13.15, Windows x64, windowed single-file bundle.
 
-SHA256: a846e14fc173abc136a6448239666fbd24a232a1e93387ff92fa56dc1ea6aacd
+SHA256: 05113d15c56dd17ccc2b36b4f9da93345d8311d4d4ce8a21792709052139505d
 
 Validation:
-- Four unittest cases passed: child lifecycle/logging, missing Telegram token, occupied API port, retry while owned API is running.
-- Frozen EXE integration PASS: Admin UI startup, isolated API health HTTP 200, engine startup with no enabled markets, automatic UI close, cooperative API shutdown, no forced termination log, unchanged seeded client/risk/subscription records.
+- Eight unittest cases passed: original lifecycle/configuration tests plus shared ngrok reuse, scheduled-task preference, independent fallback and task-permission failure.
+- Frozen EXE integration PASS: Admin UI startup, isolated API health HTTP 200, engine startup with no enabled markets, manual trading Start/Stop/Start, automatic UI close, cooperative API shutdown, no forced termination log, unchanged seeded client/risk/subscription records.
 - Same integration passed from source.
 - Verified frozen entrypoint bytecode matches current source.
 - Scheduled-task PowerShell syntax parsing and git diff whitespace checks passed.
@@ -32,5 +32,21 @@ tests/test_admin_launcher.py
 tests/smoke_admin_exe.py
 ADMIN_LAUNCHER.md
 ADMIN_BUILD_RESULT.md
+
+Button update: opening Admin starts API/Telegram only. Start Automated Trading starts the engine; Stop stops generation but leaves queued instructions and open positions unchanged. Start ngrok reuses or launches independent shared ngrok. API shutdown has a bounded drain wait. The final frozen integration passed without forced termination; live trading and ngrok network activation were not exercised.
+
+Additional files changed in this update:
+server/ngrok_start.py
+tests/test_ngrok_start.py
+
+Rebuild this output:
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist_buttons --workpath build/admin_pyi build/GOLD_AI_Admin.spec
+
+Test it in PowerShell:
+$env:GOLD_AI_TEST_EXE = 'dist_buttons/GOLD_AI_Admin.exe'
+.venv\Scripts\python.exe tests/smoke_admin_exe.py
+
+Run after closing the old Admin:
+Start-Process 'C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_buttons\GOLD_AI_Admin.exe'
 
 The generated EXE remains a local build artifact, outside the source commit. Existing unrelated local reports and files are untouched. No client-repo files changed. See ADMIN_LAUNCHER.md for exact setup/build/test/run commands and detailed current client behavior. The source commit is available with git log -1 --format=%H.

@@ -41,7 +41,7 @@ def worker(name):
     threading.Thread(target=watch, daemon=True).start()
     if name == "api":
         import uvicorn
-        server = uvicorn.Server(uvicorn.Config("server.app:app", host="127.0.0.1", port=int(os.getenv("GOLD_AI_API_PORT", "8765")), log_config=None))
+        server = uvicorn.Server(uvicorn.Config("server.app:app", host="127.0.0.1", port=int(os.getenv("GOLD_AI_API_PORT", "8765")), timeout_graceful_shutdown=10, timeout_keep_alive=2, log_config=None))
         def shutdown():
             stop.wait()
             server.should_exit = True
@@ -127,16 +127,16 @@ class Services:
         rows = [f"{name}: " + (f"Running (PID {p.pid})" if p.poll() is None else f"Exited ({p.returncode}); see logs") for name, p in self.processes.items()]
         return self.health + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.items()])
 
-    def stop(self):
-        self.monitor_stop.set()
-        for p in self.processes.values():
+    def stop_named(self, names):
+        processes = [p for name, p in self.processes.items() if name in names]
+        for p in processes:
             if p.poll() is None:
                 try:
                     p.stdin.close()
                 except OSError:
                     pass
         deadline = time.monotonic() + 25
-        for p in self.processes.values():
+        for p in processes:
             try:
                 p.wait(timeout=max(0.1, deadline-time.monotonic()))
             except subprocess.TimeoutExpired:
@@ -144,6 +144,10 @@ class Services:
                     log.write(f"Forced shutdown PID {p.pid} after 25 seconds\n")
                 p.kill()
                 p.wait()
+
+    def stop(self):
+        self.monitor_stop.set()
+        self.stop_named(tuple(self.processes))
 
 
 def main():
@@ -165,9 +169,13 @@ def main():
     try:
         from server.admin_gui import GoldAIAdmin
         app = GoldAIAdmin(services)
-        services.start()
+        services.start(("api", "telegram"))
         if "--smoke-test" in sys.argv:
-            app.after(5000, app.close_app)
+            assert "signal_engine" not in services.processes
+            app.after(500, app.start_trading)
+            app.after(2500, app.stop_trading)
+            app.after(4000, app.start_trading)
+            app.after(7000, app.close_app)
         app.mainloop()
     finally:
         services.stop()

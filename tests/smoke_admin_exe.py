@@ -9,7 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-exe=Path('dist/GOLD_AI_Admin.exe').resolve()
+exe=Path(os.getenv('GOLD_AI_TEST_EXE', 'dist/GOLD_AI_Admin.exe')).resolve()
 command=[sys.executable,'-m','server.admin_launcher'] if '--source' in sys.argv else [str(exe)]
 with tempfile.TemporaryDirectory(prefix='gold-admin-smoke-') as folder:
     root=Path(folder)
@@ -43,6 +43,7 @@ with tempfile.TemporaryDirectory(prefix='gold-admin-smoke-') as folder:
     print('GUI exit:',p.returncode,'API healthy:',healthy)
     for log in sorted((root/'logs').glob('*.log')):
         print(log.name, log.read_text(encoding='utf-8')[-1800:])
+    assert (root/'logs/signal_engine.log').read_text(encoding='utf-8').count('GOLD_AI OWNER SIGNAL ENGINE') == 2, 'Trading Start/Stop/Start failed'
     assert p.returncode==0 and healthy
     assert snapshot()==before, 'Client or subscription configuration changed'
     print('Client/risk/subscription preserved')

@@ -1,6 +1,8 @@
 # GOLD_AI single-window owner launcher
 
-Double-click dist\GOLD_AI_Admin.exe in this checkout. Both START_GOLD_AI.bat and server\run_owner_stack.bat now open that same app.
+The button-enabled build for this update is dist_buttons/GOLD_AI_Admin.exe. The running original dist/GOLD_AI_Admin.exe was locked, so it was left untouched. Close the old Admin and owner stack before opening the new EXE. Both builds share the same project data and launcher lock. To make the existing shortcuts use the new build, close all Admin instances, then copy dist_buttons/GOLD_AI_Admin.exe over dist/GOLD_AI_Admin.exe.
+
+Double-click dist\GOLD_AI_Admin.exe in this checkout. API and configured Telegram start immediately; the signal engine waits for Start Automated Trading. Stop Automated Trading stops signal generation while keeping the API and Telegram running. Already queued instructions and existing positions are unchanged. Both START_GOLD_AI.bat and server\run_owner_stack.bat now open that same app.
 
 The EXE bundles the API, signal engine and client Telegram code. It is an owner application, not a distributable client: retain this checkout's server database, credential vault key and project .env. Hosted MT5 provisioning still uses the existing owner .venv and explicitly managed hosted workers. Those workers remain separately managed; closing Admin stops its API, signal engine and Telegram children, not pre-existing hosted MT5 terminals or ngrok.
 
@@ -8,7 +10,7 @@ Configuration is loaded from the checkout .env before importing services; existi
 
 Add GOLD_AI_CLIENT_TELEGRAM_BOT_TOKEN=your_token to .env, then reopen Admin. Missing token is shown as Not configured and does not stop the API or engine. Telegram's existing commands and client linking are unchanged.
 
-The status strip reports child PID/exit and API health plus shared ngrok tunnels to the API port. Running means process alive, not proof of broker login or Telegram connectivity: inspect logs\signal_engine.log and logs\telegram.log for operational failures. logs\api.log holds API output. Services exiting unexpectedly remain stopped and visible; Retry stopped services restarts them. Logs append across runs. A failed startup does not change client risk, subscription or execution policy.
+The status strip reports child PID/exit and API health plus shared ngrok tunnels to the API port. Running means process alive, not proof of broker login or Telegram connectivity: inspect logs\signal_engine.log and logs\telegram.log for operational failures. logs\api.log holds API output. Services exiting unexpectedly remain stopped and visible; Start Automated Trading restarts the required services. Logs append across runs. A failed startup does not change client risk, subscription or execution policy.
 
 Exit sends private stdin EOF to all owned children; the API drains, Telegram finishes its current request and the engine stops between work iterations and releases MT5. A 25-second fallback kills an unresponsive owned child and records it in logs\launcher.log. No unrelated process is killed. Duplicate Admin launches are blocked by a Windows file lock. If API port is occupied, no services start: close the old owner stack deliberately and click Retry. Old CMD windows are not automatically closed.
 
@@ -50,6 +52,8 @@ ngrok logs go to C:\ProgramData\Shared-ngrok\ngrok.log. The helper validates con
 Stop-ScheduledTask -TaskName 'Shared-ngrok'
 Unregister-ScheduledTask -TaskName 'Shared-ngrok' -Confirm:$false
 ```
+
+The Start ngrok button first reuses an agent detected on localhost:4040. Otherwise it starts the installed Shared-ngrok task. If that task is absent, it launches a hidden independent ngrok process using the current account's existing ngrok authentication. With default settings, that process forwards the assigned GOLD_AI hostname to the API port. Set GOLD_AI_NGROK_EXE to an absolute ngrok path if it is not on PATH. Set GOLD_AI_NGROK_CONFIG to an external shared config to launch all named tunnels instead, or GOLD_AI_NGROK_URL to select the assigned URL for the single-tunnel fallback. No token is displayed or embedded. A running agent without a GOLD_AI tunnel is reported instead of launching a competing agent. A task permission failure is shown in Admin; the button does not elevate or install tasks. Independent fallback output is in logs/ngrok.log. Shared task logs remain in ProgramData. Closing Admin leaves either tunnel running.
 
 No task is installed by building or opening Admin. Installation is a separate explicit setup step. ngrok docs: https://ngrok.com/docs/agent/config/v2/ and https://ngrok.com/download/windows.
 
