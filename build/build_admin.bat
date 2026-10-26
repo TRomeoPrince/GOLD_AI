@@ -11,9 +11,13 @@ if not exist ".venv\Scripts\python.exe" (
   exit /b 1
 )
 
-taskkill /F /IM GOLD_AI_Admin.exe >nul 2>&1
+tasklist /FI "IMAGENAME eq GOLD_AI_Admin.exe" 2>nul | find /I "GOLD_AI_Admin.exe" >nul
+if not errorlevel 1 (
+  echo Close GOLD_AI Admin before rebuilding.
+  exit /b 1
+)
 
-".venv\Scripts\python.exe" -m pip install --upgrade pyinstaller
+".venv\Scripts\python.exe" -m pip install -r requirements.txt -r server\requirements.txt -r requirements-build.txt
 if errorlevel 1 exit /b 1
 
 if exist build\admin_pyi rmdir /s /q build\admin_pyi
@@ -29,4 +33,3 @@ if not "%BUILD_RC%"=="0" exit /b 1
 echo.
 echo Built:
 echo %CD%\dist\GOLD_AI_Admin.exe
-pause

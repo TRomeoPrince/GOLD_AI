@@ -24,14 +24,32 @@ from server.store import (
 
 
 class GoldAIAdmin(tk.Tk):
-    def __init__(self):
+    def __init__(self, services=None):
         super().__init__()
         self.title("GOLD_AI Admin • Risk, Clients & Subscriptions")
         self.geometry("1180x760")
         self.minsize(1080, 680)
+        self.services = services
         self.selected_name = ""
         self._build()
         self.refresh()
+        self.protocol("WM_DELETE_WINDOW", self.close_app)
+        self.after(500, self.update_services)
+
+    def close_app(self):
+        self.withdraw()
+        # Leave Tk responsive while network requests finish and children stop.
+        import threading
+        def stop():
+            if self.services:
+                self.services.stop()
+            self.after(0, self.destroy)
+        threading.Thread(target=stop, daemon=True).start()
+
+    def update_services(self):
+        if self.services:
+            self.service_status.set(self.services.status())
+        self.after(1000, self.update_services)
 
     def _build(self):
         top = ttk.Frame(self, padding=14)
@@ -44,6 +62,16 @@ class GoldAIAdmin(tk.Tk):
             variable=self.news_var,
             command=self.toggle_news_lock,
         ).pack(side="right")
+
+        service_bar = ttk.Frame(self, padding=(14, 0, 14, 8))
+        service_bar.pack(fill="x")
+        self.service_status = tk.StringVar(value="Starting services...")
+        ttk.Label(service_bar, textvariable=self.service_status, wraplength=1100).pack(anchor="w")
+        if self.services:
+            import os
+            ttk.Button(service_bar, text="Open service logs", command=lambda: os.startfile(str(self.services.logs))).pack(side="left")
+            ttk.Button(service_bar, text="Retry stopped services", command=self.services.start).pack(side="left", padx=8)
+        ttk.Label(service_bar, text="Shared ngrok runs separately").pack(side="left")
 
         body = ttk.Frame(self, padding=(14, 0, 14, 14))
         body.pack(fill="both", expand=True)

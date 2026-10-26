@@ -3,14 +3,14 @@
 from pathlib import Path
 
 PROJECT_ROOT = str(Path(SPECPATH).resolve().parent)
-ENTRYPOINT = str(Path(PROJECT_ROOT) / "server" / "admin_gui.py")
+ENTRYPOINT = str(Path(PROJECT_ROOT) / "server" / "admin_launcher.py")
 
 a = Analysis(
     [ENTRYPOINT],
     pathex=[PROJECT_ROOT],
     binaries=[],
     datas=[],
-    hiddenimports=["server", "server.store", "server.credential_vault", "server.hosted_manager"],
+    hiddenimports=["server", "server.store", "server.credential_vault", "server.hosted_manager", "server.admin_gui", "server.app", "server.signal_engine", "uvicorn.logging", "uvicorn.loops.auto", "uvicorn.protocols.http.auto", "uvicorn.protocols.websockets.auto", "uvicorn.lifespan.on"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

@@ -22,3 +22,7 @@ server/hosted_mt5/
 
 # Hosted worker diagnostic logs
 server/hosted_logs/
+
+# Launcher runtime
+.admin.lock
+logs/

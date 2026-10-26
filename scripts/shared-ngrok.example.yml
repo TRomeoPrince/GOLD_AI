@@ -1,0 +1,10 @@
+version: "2"
+authtoken: REPLACE_WITH_YOUR_NGROK_AUTHTOKEN
+web_addr: 127.0.0.1:4040
+tunnels:
+  gold-ai:
+    proto: http
+    addr: 127.0.0.1:8765
+    domain: grandpa-skier-sphere.ngrok-free.dev
+# Add other named tunnels with their own local ports and assigned domains here.
+# Availability and concurrent endpoints depend on the ngrok account plan.

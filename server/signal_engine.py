@@ -26,7 +26,9 @@ def _signal_key(market: str, signal) -> str:
     return f"{market}|{signal.strategy_id}|{signal.direction}|{signal.setup_time}"
 
 
-def main() -> None:
+def main(stop=None) -> None:
+    import threading
+    stop = stop or threading.Event()
     clients = {}
     for market, hint in ACTIVE_MARKETS.items():
         mt5_client = MT5Client(hint)
@@ -43,10 +45,10 @@ def main() -> None:
     print("Protected strategies run here; customer clients receive instructions only.")
     print("Ctrl+C to stop.")
 
-    while True:
+    while not stop.is_set():
         if news_lock_enabled():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] NEWS LOCK active — new entries blocked.")
-            time.sleep(DEMO_POLL_SECONDS)
+            stop.wait(DEMO_POLL_SECONDS)
             continue
 
         now = datetime.now(timezone.utc).timestamp()
@@ -88,7 +90,7 @@ def main() -> None:
                 )
                 seen.add(key)
 
-        time.sleep(DEMO_POLL_SECONDS)
+        stop.wait(DEMO_POLL_SECONDS)
 
 
 if __name__ == "__main__":
