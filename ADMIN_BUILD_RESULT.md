@@ -1,52 +1,50 @@
-# Admin launcher build result — 26 October 2026
+# GOLD_AI Admin personal trading build — 26 October 2026
 
-Owner checkout: C:\Users\USER\Desktop\Bots\Forex\AMD1
+Build PASS: Python 3.13.15, PyInstaller 6.22.3, windowed Windows x64 one-file bundle.
 
-Artifact: dist_buttons/GOLD_AI_Admin.exe (the running original was left untouched)
+Verified artifact: dist_personal/GOLD_AI_Admin.exe. Identical verified copies installed at dist/GOLD_AI_Admin.exe and dist_buttons/GOLD_AI_Admin.exe after confirming neither destination was running.
 
-Build: PASS, PyInstaller 6.22.3, Python 3.13.15, Windows x64, windowed single-file bundle.
+SHA256: 633ec35b59912fc58abc48e898e6a77a2208d8d9f75ac6398f9088e9164f5b07
 
-SHA256: 05113d15c56dd17ccc2b36b4f9da93345d8311d4d4ce8a21792709052139505d
+Behavior:
+- Customer signal generation is independent of personal account configuration and never starts personal execution implicitly.
+- Personal MT5 Settings selects an explicit installed terminal, detects its current account and saves expected account/server and risk limits locally. Start My MT5 Trading starts a hidden worker and common signal engine; Stop My MT5 Trading leaves the engine/customer signals running.
+- Personal trading has no client registration, pairing, subscription or ngrok requirement. Market-data MT5 is still required by the common engine.
+- Account identity and permissions, global and local risk limits, news lock, daily loss/profit, portfolio risk and fresh prices are enforced. Personal account risk includes manual positions. Per-account durable claims prevent automatic retries of uncertain submissions.
+- A matching active customer/hosted execution route blocks the personal worker until paused/stopped to avoid duplicates.
+- Added real engine/personal readiness to the status bar. Fixed a startup deadlock caused by a blocking Windows CRT stdin watcher during NumPy native-library imports; shutdown now watches the private pipe without blocking that stream lock.
 
-Validation:
-- Eight unittest cases passed: original lifecycle/configuration tests plus shared ngrok reuse, scheduled-task preference, independent fallback and task-permission failure.
-- Frozen EXE integration PASS: Admin UI startup, isolated API health HTTP 200, engine startup with no enabled markets, manual trading Start/Stop/Start, automatic UI close, cooperative API shutdown, no forced termination log, unchanged seeded client/risk/subscription records.
-- Same integration passed from source.
-- Verified frozen entrypoint bytecode matches current source.
-- Scheduled-task PowerShell syntax parsing and git diff whitespace checks passed.
-- No live trade, broker account or Telegram delivery test performed. Scheduled task not installed or boot-tested; requires private ngrok config and elevated setup.
-- Existing API at 127.0.0.1:8765 left running untouched. Close old stack before launching this version on that port.
+Verification:
+- 22 unittest cases PASS, including owner signals with zero customers, personal execution with no client/subscription tables, durable duplicate prevention, account switching/stop guards, global risk clamp, minimum-lot ceiling, manual unprotected positions, stale quotes/missing history, ambiguous submission and original launcher/ngrok behavior.
+- Source integration PASS: personal settings dialog creation, no personal autostart, actual engine SCANNING, Start/Stop/Start, API health, preserved seeded client/risk/subscription rows and shutdown.
+- Final frozen EXE integration PASS for the same lifecycle and preservation checks. Existing Windows asyncio connection resets during aggressive test health polling may require the configured 10-second API drain timeout; there was no forced process kill in the final pass.
+- Frozen personal worker failure-path PASS: missing settings produces visible runtime ERROR and exit 1, without attempting an MT5 connection or showing an unhandled-error popup.
+- No live order or real-account execution was performed. Personal order processing is tested with a simulated MT5 interface. ngrok startup setup remains as documented; no Windows task was installed during this change.
 
-Changed files:
+Files changed for personal trading:
 .gitignore
-START_GOLD_AI.bat
-build/GOLD_AI_Admin.spec
-build/build_admin.bat
 server/admin_gui.py
 server/admin_launcher.py
-server/run_owner_stack.bat
 server/signal_engine.py
-scripts/install_shared_ngrok.ps1
-scripts/shared-ngrok.example.yml
-tests/test_admin_launcher.py
+server/hosted_executor.py
+server/personal_store.py
+server/personal_worker.py
+tests/test_personal_trading.py
 tests/smoke_admin_exe.py
+tests/smoke_personal_exe.py
 ADMIN_LAUNCHER.md
 ADMIN_BUILD_RESULT.md
 
-Button update: opening Admin starts API/Telegram only. Start Automated Trading starts the engine; Stop stops generation but leaves queued instructions and open positions unchanged. Start ngrok reuses or launches independent shared ngrok. API shutdown has a bounded drain wait. The final frozen integration passed without forced termination; live trading and ngrok network activation were not exercised.
+Build/test commands:
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist_personal --workpath build/admin_pyi build/GOLD_AI_Admin.spec
+$env:GOLD_AI_TEST_EXE = 'dist_personal/GOLD_AI_Admin.exe'
+.venv\Scripts\python.exe tests\smoke_admin_exe.py
+.venv\Scripts\python.exe tests\smoke_personal_exe.py
 
-Additional files changed in this update:
-server/ngrok_start.py
-tests/test_ngrok_start.py
+Run after closing any older Admin:
+Start-Process 'C:\Users\USER\Desktop\Bots\Forex\AMD1\dist\GOLD_AI_Admin.exe'
 
-Rebuild this output:
-.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist_buttons --workpath build/admin_pyi build/GOLD_AI_Admin.spec
+First setup: Personal MT5 Settings > Browse > Detect Logged-in Account > review account and limits > Save Settings > Start My MT5 Trading. Wait for Personal: READY and Engine: SCANNING. See ADMIN_LAUNCHER.md for details, logs, shared ngrok setup and current separate client behavior.
 
-Test it in PowerShell:
-$env:GOLD_AI_TEST_EXE = 'dist_buttons/GOLD_AI_Admin.exe'
-.venv\Scripts\python.exe tests/smoke_admin_exe.py
-
-Run after closing the old Admin:
-Start-Process 'C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_buttons\GOLD_AI_Admin.exe'
-
-The generated EXE remains a local build artifact, outside the source commit. Existing unrelated local reports and files are untouched. No client-repo files changed. See ADMIN_LAUNCHER.md for exact setup/build/test/run commands and detailed current client behavior. The source commit is available with git log -1 --format=%H.
+Generated executables are local artifacts outside the source commit. Unrelated files, existing client records/subscriptions and the separate GOLD_AI_client repository were not changed. Get the source commit with git log -1 --format=%H.

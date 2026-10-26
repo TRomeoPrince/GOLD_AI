@@ -1,6 +1,6 @@
 # GOLD_AI single-window owner launcher
 
-The button-enabled build for this update is dist_buttons/GOLD_AI_Admin.exe. The running original dist/GOLD_AI_Admin.exe was locked, so it was left untouched. Close the old Admin and owner stack before opening the new EXE. Both builds share the same project data and launcher lock. To make the existing shortcuts use the new build, close all Admin instances, then copy dist_buttons/GOLD_AI_Admin.exe over dist/GOLD_AI_Admin.exe.
+The latest build includes personal MT5 execution. dist_personal/GOLD_AI_Admin.exe is the tested build output; the normal dist/GOLD_AI_Admin.exe and previous dist_buttons/GOLD_AI_Admin.exe are updated after successful verification when those files are not in use. Close any older Admin instance before opening the latest EXE.
 
 Double-click dist\GOLD_AI_Admin.exe in this checkout. API and configured Telegram start immediately; the signal engine waits for Start Automated Trading. Stop Automated Trading stops signal generation while keeping the API and Telegram running. Already queued instructions and existing positions are unchanged. Both START_GOLD_AI.bat and server\run_owner_stack.bat now open that same app.
 
@@ -71,3 +71,36 @@ Repository: C:\Users\USER\Desktop\Bots\GOLD_AI_client. No client files changed. 
 - Actual local sizing constants: target 0.9% equity, maximum single-trade/minimum-lot adaptation 15%, maximum total open risk 40% counting only magic 560090. It does not consume an instruction's risk_policy or enforce daily-loss/profit limits locally. This differs from the owner's current hard 2% policy. This launcher change deliberately preserves existing behavior; upgrading client policy enforcement is separate work.
 - Telegram checkbox is saved locally, but authorize sends username, not telegram_enabled. Notification delivery/linking is server-side; checkbox alone does not guarantee disabling delivery.
 - Closing sets the stop flag, calls mt5.shutdown and destroys the UI. It does not join the daemon worker, close existing positions or remove broker-side SL/TP. No trailing/ongoing position-management loop exists in this client source.
+
+## Personal MT5 trading (independent of customer registration)
+
+Start Automated Trading starts the common signal engine for customers. It works without configuring, registering, pairing, subscribing or running a personal account. The engine still needs a logged-in MT5 market-data terminal. Shared ngrok is needed for remote clients, not for local personal execution.
+
+To trade your own account from Admin:
+1. Open Personal MT5 Settings and Browse to your installed terminal64.exe.
+2. Log into that terminal yourself, click Detect Logged-in Account, check login/server, select your risk limits and Save Settings. The app never asks for an MT5 password or switches account logins.
+3. Click Start My MT5 Trading. It starts the common signal engine if needed and a hidden personal worker. Wait for Personal: READY and Engine: SCANNING in the status bar. Starting a process alone is not confirmation of readiness. An error is shown if the terminal, account or permissions are wrong.
+4. Stop My MT5 Trading stops only personal execution; customer signals continue. Stop Automated Trading stops both the signal engine and personal worker. Closing Admin also stops them. Existing broker positions and SL/TP remain; queued customer instructions are unchanged.
+
+Personal trading starts only after an explicit click on every Admin session. No client record or subscription is created or required. If the same login/server is already an ACTIVE client, pause that client and close its separate Client EXE or hosted worker first; the personal worker refuses duplicate active execution paths. It also refuses an ACTIVE/CONNECTING hosted worker for the same account. Changing account or risk configuration requires stopping personal trading first.
+
+Personal settings are local in server/personal_account.json (ignored by Git). The expected login and server are checked continuously and immediately before each order; account switching or loss of permission stops the worker. This personal path uses the existing hosted executor with stricter optional checks, without changing the valid hosted-customer defaults:
+- Local configured risk per trade is 0.1–2%, open risk 5–40% and daily loss 2–10%; owner/global controls may make these stricter. The 2% single-order ceiling also applies when broker minimum lot is larger than normal sizing.
+- News lock and the global daily-profit target apply. Broker symbol resolution, current SL/TP geometry and lot/filling checks remain in use.
+- Personal portfolio risk counts all account positions, including manual positions. An unprotected position with no SL blocks new personal entries. Missing daily history or quotes older than 120 seconds also block submission.
+- Personal execution consumes the same signal payloads generated for customers through new owner_signals/personal_deliveries tables; it does not run a second strategy scan. No backlog is executed at Start/restart. The existing signal age limit also applies.
+- Account/signal claims are persisted before broker submission. Attempted signals are never automatically retried after a crash or ambiguous broker result. SUBMITTING or ERROR_REVIEW records require checking broker orders manually; see logs/personal.log and the personal_deliveries table. This avoids automatic duplicate submissions but is not a distributed guarantee against an unrelated trading program on another computer.
+
+Personal runtime status and last result appear in the main status bar and logs/personal_status.json. Worker output is logs/personal.log. Detection uses a separate hidden process and logs/personal_probe.log; it does not submit orders. Customer features and existing client/subscription rows remain independent.
+
+Personal build and verification (PowerShell):
+```powershell
+Set-Location 'C:\Users\USER\Desktop\Bots\Forex\AMD1'
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist_personal --workpath build/admin_pyi build/GOLD_AI_Admin.spec
+$env:GOLD_AI_TEST_EXE = 'dist_personal/GOLD_AI_Admin.exe'
+.\.venv\Scripts\python.exe tests\smoke_admin_exe.py
+.\.venv\Scripts\python.exe tests\smoke_personal_exe.py
+Start-Process '.\dist_personal\GOLD_AI_Admin.exe'
+```
+The integration smoke uses an isolated database, no enabled markets and no personal config. Unit tests simulate broker execution; verification does not place live trades. A nonblocking Windows pipe watcher prevents numerical-library DLL imports from hanging during background-service startup.

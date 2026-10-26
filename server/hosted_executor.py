@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import floor
 from datetime import datetime
+import time
 
 import MetaTrader5 as mt5
 
@@ -84,14 +85,14 @@ def _volume_for_risk(
     return volume, pct
 
 
-def _open_risk_pct() -> float:
+def _open_risk_pct(include_all_positions=False) -> float:
     account = mt5.account_info()
     if account is None or float(account.equity) <= 0:
         return float("inf")
     equity = float(account.equity)
     total = 0.0
     for p in mt5.positions_get() or ():
-        if int(getattr(p, "magic", -1)) != MAGIC:
+        if not include_all_positions and int(getattr(p, "magic", -1)) != MAGIC:
             continue
         sl = float(getattr(p, "sl", 0.0) or 0.0)
         if sl <= 0:
@@ -111,14 +112,17 @@ def _open_risk_pct() -> float:
     return 100.0 * total / equity
 
 
-def _daily_profit_pct() -> float:
+def _daily_profit_pct(strict=False) -> float:
     account = mt5.account_info()
     if account is None:
         return 0.0
 
     now = datetime.now()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    deals = mt5.history_deals_get(start, now) or ()
+    deals = mt5.history_deals_get(start, now)
+    if strict and deals is None:
+        raise RuntimeError("Daily MT5 history unavailable; order blocked.")
+    deals = deals or ()
 
     realized = 0.0
     for d in deals:
@@ -135,14 +139,17 @@ def _daily_profit_pct() -> float:
     return 100.0 * profit_cash / start_balance
 
 
-def _daily_loss_pct() -> float:
+def _daily_loss_pct(strict=False) -> float:
     account = mt5.account_info()
     if account is None:
         return float("inf")
 
     now = datetime.now()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    deals = mt5.history_deals_get(start, now) or ()
+    deals = mt5.history_deals_get(start, now)
+    if strict and deals is None:
+        raise RuntimeError("Daily MT5 history unavailable; order blocked.")
+    deals = deals or ()
 
     realized = 0.0
     for d in deals:
@@ -166,6 +173,11 @@ def execute_instruction(
     max_daily_loss_pct: float,
     daily_profit_target_enabled: bool = False,
     daily_profit_target_pct: float = 0.0,
+    *,
+    max_single_risk_pct: float = 15.0,
+    before_send=None,
+    include_all_positions: bool = False,
+    strict_history: bool = False,
 ) -> ExecutionResult:
     terminal = mt5.terminal_info()
     account = mt5.account_info()
@@ -175,7 +187,7 @@ def execute_instruction(
         return ExecutionResult(False, None, "Algo Trading is disabled.")
 
     if bool(daily_profit_target_enabled):
-        daily_profit = _daily_profit_pct()
+        daily_profit = _daily_profit_pct(strict_history)
         if daily_profit >= float(daily_profit_target_pct):
             return ExecutionResult(
                 False,
@@ -183,7 +195,7 @@ def execute_instruction(
                 f"DAILY_PROFIT_TARGET_REACHED: {daily_profit:.2f}% >= {float(daily_profit_target_pct):.2f}%.",
             )
 
-    daily_loss = _daily_loss_pct()
+    daily_loss = _daily_loss_pct(strict_history)
     if daily_loss >= float(max_daily_loss_pct):
         return ExecutionResult(
             False,
@@ -192,6 +204,8 @@ def execute_instruction(
         )
 
     direction = str(payload["direction"]).upper()
+    if direction not in {"BUY", "SELL"}:
+        raise ValueError("Unsupported trade direction.")
     symbol = _resolve_symbol(
         str(payload.get("symbol_hint") or payload.get("market") or "XAUUSD")
     )
@@ -200,6 +214,9 @@ def execute_instruction(
     tick = mt5.symbol_info_tick(symbol)
     if tick is None:
         return ExecutionResult(False, None, f"No live tick for {symbol}.")
+
+    if strict_history and not 0 <= time.time() - float(getattr(tick, "time", 0)) <= 120:
+        return ExecutionResult(False, None, "STALE_QUOTE: no recent broker tick.")
 
     price = float(tick.ask if direction == "BUY" else tick.bid)
     valid = sl < price < tp if direction == "BUY" else tp < price < sl
@@ -216,7 +233,7 @@ def execute_instruction(
         price,
         sl,
         float(risk_per_trade_pct),
-        min(float(max_open_risk_pct), 15.0),
+        min(float(max_open_risk_pct), float(max_single_risk_pct)),
     )
     if volume <= 0:
         return ExecutionResult(
@@ -226,7 +243,7 @@ def execute_instruction(
             planned_risk_pct=single_pct,
         )
 
-    open_pct = _open_risk_pct()
+    open_pct = _open_risk_pct(include_all_positions)
     post_pct = open_pct + single_pct
     if post_pct > float(max_open_risk_pct) + 0.001:
         return ExecutionResult(
@@ -276,8 +293,12 @@ def execute_instruction(
         check = mt5.order_check(request)
         if check is None or int(check.retcode) != 0:
             continue
+        if before_send is not None:
+            before_send()
         result = mt5.order_send(request)
         if result is None:
+            if strict_history:
+                raise RuntimeError("MT5 submission returned no result; review broker orders before retrying.")
             continue
         done = int(result.retcode) in {
             int(getattr(mt5, "TRADE_RETCODE_DONE", 10009)),

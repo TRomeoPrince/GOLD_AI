@@ -34,10 +34,31 @@ def worker(name):
         sys.stdout = sys.stderr = open(log, "a", encoding="utf-8", buffering=1)
     import logging
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
+    logging.info("Starting background service: %s", name)
+    if os.getenv("GOLD_AI_TEST_DIAGNOSTICS") == "1":
+        import faulthandler
+        faulthandler.dump_traceback_later(8, repeat=True, file=sys.stderr)
     stop = threading.Event()
     def watch():
-        sys.stdin.buffer.read(1)  # A byte or parent pipe EOF requests shutdown.
-        stop.set()
+        if os.name == "nt":
+            # A blocking CRT stdin read can deadlock NumPy's Windows DLL load.
+            # Poll the private pipe without reading or holding the CRT stream lock.
+            import ctypes
+            import msvcrt
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.PeekNamedPipe.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong, ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.c_void_p]
+            kernel.PeekNamedPipe.restype = ctypes.c_int
+            handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+            available = ctypes.c_ulong()
+            while not stop.is_set():
+                ok = kernel.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None)
+                if not ok or available.value:
+                    stop.set()  # Parent pipe EOF, or an explicit stop byte.
+                    return
+                stop.wait(.2)
+        else:
+            sys.stdin.buffer.read(1)
+            stop.set()
     threading.Thread(target=watch, daemon=True).start()
     if name == "api":
         import uvicorn
@@ -54,6 +75,12 @@ def worker(name):
             main(stop)
         finally:
             mt5.shutdown()
+    elif name == "personal":
+        from server.personal_worker import run
+        run(stop)
+    elif name == "personal_probe":
+        from server.personal_worker import probe
+        probe()
     elif name == "telegram":
         from server.client_telegram import ClientTelegramBot
         bot = ClientTelegramBot()
@@ -78,7 +105,7 @@ class Services:
         self.logs = root / "logs"
         self.logs.mkdir(parents=True, exist_ok=True)
 
-    def start(self, names=("api", "signal_engine", "telegram")):
+    def start(self, names=("api", "signal_engine", "telegram"), extra_env=None):
         # Do not attach to or kill an independently launched API.
         api = self.processes.get("api")
         if "api" in names and (api is None or api.poll() is not None):
@@ -97,9 +124,10 @@ class Services:
                 continue
             args = [sys.executable, "--service", name] if getattr(sys, "frozen", False) else [sys.executable, "-m", "server.admin_launcher", "--service", name]
             try:
+                (self.logs / (name + "_status.json")).unlink(missing_ok=True)
                 with open(self.logs / (name + ".log"), "ab", buffering=0) as log:
                     log.write(b"\n=== service starting ===\n")
-                    self.processes[name] = subprocess.Popen(args, cwd=self.root, stdin=subprocess.PIPE, stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"})
+                    self.processes[name] = subprocess.Popen(args, cwd=self.root, stdin=subprocess.PIPE, stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", **(extra_env or {})})
                 self.errors.pop(name, None)
             except Exception as exc:
                 self.errors[name] = str(exc)
@@ -123,9 +151,54 @@ class Services:
             self.health = " | ".join(values)
             self.monitor_stop.wait(3)
 
+    def detect_personal(self, terminal):
+        import json
+        self.start(("personal_probe",), extra_env={"GOLD_AI_PERSONAL_PROBE_TERMINAL": terminal})
+        process = self.processes.get("personal_probe")
+        if process is None:
+            raise RuntimeError(self.errors.get("personal_probe", "Could not start MT5 detection."))
+        try:
+            process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.stop_named(("personal_probe",))
+            raise RuntimeError("MT5 detection timed out. Log in to the selected terminal and retry.")
+        finally:
+            if process.stdin:
+                process.stdin.close()
+        path = self.logs / "personal_probe_status.json"
+        if not path.exists():
+            raise RuntimeError("MT5 detection failed; see personal_probe.log.")
+        result = json.loads(path.read_text(encoding="utf-8"))
+        if result.get("state") != "DETECTED":
+            raise RuntimeError(result.get("message", "MT5 detection failed."))
+        return result
+
+    def start_personal(self):
+        from .personal_store import load_settings
+        load_settings()  # Validated before starting either service.
+        self.start(("signal_engine", "personal"))
+
+    def runtime_status(self, name):
+        import json
+        process = self.processes.get(name)
+        if process is None:
+            return "off"
+        if process.poll() is not None:
+            try:
+                value = json.loads((self.logs / (name + "_status.json")).read_text(encoding="utf-8"))
+                return "stopped: " + value.get("message", "see service log")
+            except (OSError, ValueError):
+                return "stopped; see service log"
+        try:
+            value = json.loads((self.logs / (name + "_status.json")).read_text(encoding="utf-8"))
+            stale = time.time() - value.get("updated", 0) > 30
+            return value.get("state", "") + (" (status stale)" if stale else "") + ": " + str(value.get("message", value.get("login", "")))
+        except (OSError, ValueError):
+            return "starting" if self.processes.get(name) and self.processes[name].poll() is None else "off"
+
     def status(self):
         rows = [f"{name}: " + (f"Running (PID {p.pid})" if p.poll() is None else f"Exited ({p.returncode}); see logs") for name, p in self.processes.items()]
-        return self.health + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.items()])
+        return self.health + " | Engine: " + self.runtime_status("signal_engine") + " | Personal: " + self.runtime_status("personal") + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.items()])
 
     def stop_named(self, names):
         processes = [p for name, p in self.processes.items() if name in names]
@@ -153,7 +226,12 @@ class Services:
 def main():
     root = configure()
     if len(sys.argv) == 3 and sys.argv[1] == "--service":
-        worker(sys.argv[2])
+        try:
+            worker(sys.argv[2])
+        except Exception:
+            import logging
+            logging.exception("Background service failed")
+            raise SystemExit(1)
         return
     # File lock prevents duplicate signal engines, even when API failed to start.
     import msvcrt
@@ -172,10 +250,31 @@ def main():
         services.start(("api", "telegram"))
         if "--smoke-test" in sys.argv:
             assert "signal_engine" not in services.processes
-            app.after(500, app.start_trading)
-            app.after(2500, app.stop_trading)
-            app.after(4000, app.start_trading)
-            app.after(7000, app.close_app)
+            assert "personal" not in services.processes
+            phase = [0]
+            def smoke_actions():
+                if app.control_busy:
+                    app.after(100, smoke_actions)
+                    return
+                process = services.processes.get("signal_engine")
+                if phase[0] == 0:
+                    app.personal_settings()
+                    for child in app.winfo_children():
+                        if child.winfo_class() == "Toplevel":
+                            child.destroy()
+                    app.start_trading()
+                    phase[0] = 1
+                elif phase[0] == 1 and services.runtime_status("signal_engine").startswith("SCANNING"):
+                    app.stop_trading()
+                    phase[0] = 2
+                elif phase[0] == 2 and process is not None and process.poll() is not None:
+                    app.start_trading()
+                    phase[0] = 3
+                elif phase[0] == 3 and services.runtime_status("signal_engine").startswith("SCANNING"):
+                    app.close_app()
+                    return
+                app.after(200, smoke_actions)
+            app.after(300, smoke_actions)
         app.mainloop()
     finally:
         services.stop()

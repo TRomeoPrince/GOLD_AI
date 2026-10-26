@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix='gold-admin-smoke-') as folder:
     env={**os.environ,'PYTHONPATH':str(Path.cwd()),'GOLD_AI_HOME':folder,'GOLD_AI_API_PORT':str(port),
          'GOLD_AI_DB_PATH':str(root/'server/test.db'),'GOLD_AI_STATE_DIR':str(root/'server'),
          'GOLD_AI_CLIENT_TELEGRAM_BOT_TOKEN':'','GOLD_AI_MARKETS':'',
-         'GOLD_AI_PROJECT_ROOT':folder}
+         'GOLD_AI_PROJECT_ROOT':folder,'GOLD_AI_TEST_DIAGNOSTICS':'1'}
     subprocess.run([sys.executable, '-c', "from server.store import create_client,set_client_risk,set_subscription; c,_=create_client('Smoke Client'); set_client_risk(c.name,0.5,20,4); set_subscription(c.id,plan_code='STARTER',status='ACTIVE',starts_utc='2026-01-01T00:00:00+00:00',expires_utc='2099-01-01T00:00:00+00:00')"], env=env,check=True)
     def snapshot():
         with sqlite3.connect(root/'server/test.db') as con:
@@ -39,7 +39,11 @@ with tempfile.TemporaryDirectory(prefix='gold-admin-smoke-') as folder:
         except Exception:
             pass
         time.sleep(.2)
-    p.wait(timeout=30)
+    try:
+        p.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        subprocess.run(['taskkill','/PID',str(p.pid),'/T','/F'],capture_output=True)
+        p.wait(timeout=10)
     print('GUI exit:',p.returncode,'API healthy:',healthy)
     for log in sorted((root/'logs').glob('*.log')):
         print(log.name, log.read_text(encoding='utf-8')[-1800:])

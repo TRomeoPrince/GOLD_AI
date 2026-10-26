@@ -52,13 +52,14 @@ class GoldAIAdmin(tk.Tk):
             self.after(0, self.destroy)
         threading.Thread(target=stop, daemon=True).start()
 
-    def run_control(self, action):
+    def run_control(self, action, on_result=None):
         if self.control_busy or self.closing:
             return
         import threading
         self.control_busy = True
         for button in self.control_buttons:
-            button.configure(state="disabled")
+            if button.winfo_exists():
+                button.configure(state="disabled")
         def work():
             try:
                 result = action()
@@ -67,7 +68,12 @@ class GoldAIAdmin(tk.Tk):
             self.after(0, lambda: finish(result))
         def finish(result):
             self.control_busy = False
-            self.status.set(result or "Done.")
+            if on_result is not None and isinstance(result, dict):
+                on_result(result)
+                self.status.set("MT5 account detected. Check the account details, then Save Settings.")
+            else:
+                self.status.set(result or "Done.")
+            self.control_buttons[:] = [b for b in self.control_buttons if b.winfo_exists()]
             for button in self.control_buttons:
                 button.configure(state="normal")
         threading.Thread(target=work, daemon=True).start()
@@ -82,9 +88,84 @@ class GoldAIAdmin(tk.Tk):
 
     def stop_trading(self):
         def stop():
-            self.services.stop_named(("signal_engine",))
-            return "Signal engine stopped. Existing positions and already queued instructions are unchanged."
+            self.services.stop_named(("signal_engine", "personal"))
+            return "Signal engine and personal trading stopped. Existing positions and customer instructions are unchanged."
         self.run_control(stop)
+
+    def start_personal_trading(self):
+        from server.personal_store import load_settings
+        try:
+            settings = load_settings()
+        except (OSError, ValueError, KeyError):
+            self.personal_settings()
+            self.status.set("Save Personal MT5 Settings, then click Start My MT5 Trading.")
+            return
+        def start():
+            self.services.start_personal()
+            return f"Connecting personal trading to {settings['login']} @ {settings['server']}. Wait for Personal: READY in service status."
+        self.run_control(start)
+
+    def stop_personal_trading(self):
+        def stop():
+            self.services.stop_named(("personal",))
+            return "Personal trading stopped. Customer signals continue; open positions and broker SL/TP remain."
+        self.run_control(stop)
+
+    def personal_settings(self):
+        from server.personal_store import load_settings, save_settings
+        process = self.services.processes.get("personal")
+        if process and process.poll() is None:
+            self.status.set("Stop My MT5 Trading before changing its terminal, account or risk settings.")
+            return
+        try:
+            settings = load_settings()
+        except (OSError, ValueError, KeyError):
+            settings = {}
+        window = tk.Toplevel(self)
+        window.title("Personal MT5 Settings")
+        window.geometry("740x510")
+        frame = ttk.Frame(window, padding=18)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="YOUR PERSONAL MT5 ACCOUNT", font=("Segoe UI", 16, "bold")).pack(anchor="w")
+        ttk.Label(frame, text="Select your installed terminal and log in within MT5. No client registration, subscription or MT5 password is needed here.", wraplength=690).pack(anchor="w", pady=10)
+        fields = {}
+        for key, label, default in (("terminal_path", "MT5 terminal executable", ""), ("login", "Expected MT5 login", ""), ("server", "Expected broker server", ""), ("risk_per_trade_pct", "Risk per trade % (0.1–2)", "0.9"), ("max_open_risk_pct", "Max account open risk % (5–40)", "40"), ("max_daily_loss_pct", "Max daily loss % (2–10)", "5")):
+            row = ttk.Frame(frame)
+            row.pack(fill="x", pady=5)
+            ttk.Label(row, text=label, width=32).pack(side="left")
+            fields[key] = tk.StringVar(value=str(settings.get(key, default)))
+            ttk.Entry(row, textvariable=fields[key]).pack(side="left", fill="x", expand=True)
+            if key == "terminal_path":
+                def browse():
+                    path = filedialog.askopenfilename(parent=window, title="Select your MT5 terminal", filetypes=[("MT5 terminal", "terminal64.exe"), ("Executable", "*.exe")])
+                    if path:
+                        fields["terminal_path"].set(path)
+                ttk.Button(row, text="Browse", command=browse).pack(side="right", padx=5)
+        ttk.Label(frame, text="Global risk settings may tighten these limits. News lock applies. If this account is also an active client, pause that client and close its Client/hosted worker before starting personal trading.", wraplength=690).pack(anchor="w", pady=12)
+        actions = ttk.Frame(frame)
+        actions.pack(fill="x", pady=8)
+        def detected(result):
+            if window.winfo_exists():
+                fields["login"].set(str(result["login"]))
+                fields["server"].set(result["server"])
+        def detect():
+            terminal = fields["terminal_path"].get().strip()
+            if not terminal:
+                messagebox.showwarning("Personal MT5", "Browse to your MT5 terminal first.", parent=window)
+                return
+            self.run_control(lambda: self.services.detect_personal(terminal), on_result=detected)
+        def save():
+            try:
+                saved = save_settings({key: value.get().strip() for key, value in fields.items()})
+                self.status.set(f"Personal account saved: {saved['login']} @ {saved['server']}. Click Start My MT5 Trading when ready.")
+                window.destroy()
+            except (ValueError, OSError) as exc:
+                messagebox.showerror("Personal MT5", str(exc), parent=window)
+        for label, action in (("Detect Logged-in Account", detect), ("Save Settings", save)):
+            button = ttk.Button(actions, text=label, command=action)
+            button.pack(side="left", padx=5)
+            self.control_buttons.append(button)
+        ttk.Button(actions, text="Close", command=window.destroy).pack(side="right")
 
     def start_ngrok(self):
         from server.ngrok_start import start_ngrok
@@ -120,6 +201,15 @@ class GoldAIAdmin(tk.Tk):
                 button.pack(side="left", padx=6)
                 self.control_buttons.append(button)
         ttk.Label(service_bar, text="Shared ngrok runs separately").pack(side="left")
+
+        if self.services:
+            personal = ttk.LabelFrame(self, text="Personal account — optional; customer signals work without this", padding=8)
+            personal.pack(fill="x", padx=14, pady=(0, 8))
+            for label, action in (("Personal MT5 Settings", self.personal_settings), ("Start My MT5 Trading", self.start_personal_trading), ("Stop My MT5 Trading", self.stop_personal_trading)):
+                button = ttk.Button(personal, text=label, command=action)
+                button.pack(side="left", padx=5)
+                self.control_buttons.append(button)
+            ttk.Label(personal, text="No Client EXE required for your account.").pack(side="left", padx=10)
 
         body = ttk.Frame(self, padding=(14, 0, 14, 14))
         body.pack(fill="both", expand=True)

@@ -26,3 +26,7 @@ server/hosted_logs/
 # Launcher runtime
 .admin.lock
 logs/
+
+# Personal MT5 local configuration
+server/personal_account.json
+server/personal_account.tmp

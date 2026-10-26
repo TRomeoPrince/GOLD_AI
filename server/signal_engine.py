@@ -11,6 +11,7 @@ from broker.mt5_client import MT5Client
 from config import ACTIVE_MARKETS, DEMO_MAX_SIGNAL_AGE_MINUTES, DEMO_POLL_SECONDS, M5_BARS
 from strategies import StrategyRegistry
 
+from .personal_store import publish_signal, write_status
 from .store import active_clients, enqueue_instruction, news_lock_enabled
 
 
@@ -29,6 +30,8 @@ def _signal_key(market: str, signal) -> str:
 def main(stop=None) -> None:
     import threading
     stop = stop or threading.Event()
+    write_status("signal_engine", state="CONNECTING", message="Connecting market data to MT5")
+    print("Connecting signal engine market data to MT5...", flush=True)
     clients = {}
     for market, hint in ACTIVE_MARKETS.items():
         mt5_client = MT5Client(hint)
@@ -46,6 +49,7 @@ def main(stop=None) -> None:
     print("Ctrl+C to stop.")
 
     while not stop.is_set():
+        write_status("signal_engine", state="NEWS_LOCK" if news_lock_enabled() else "SCANNING", markets=list(clients))
         if news_lock_enabled():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] NEWS LOCK active — new entries blocked.")
             stop.wait(DEMO_POLL_SECONDS)
@@ -78,6 +82,7 @@ def main(stop=None) -> None:
                 }
                 encoded = json.dumps(payload, default=str, separators=(",", ":"))
 
+                publish_signal(key, payload)
                 queued = 0
                 for customer in active_clients():
                     if enqueue_instruction(customer.id, key, encoded):
