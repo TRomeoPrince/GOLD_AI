@@ -30,3 +30,5 @@ logs/
 # Personal MT5 local configuration
 server/personal_account.json
 server/personal_account.tmp
+
+server/.personal_account.*.tmp

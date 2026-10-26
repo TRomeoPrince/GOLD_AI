@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import MetaTrader5 as mt5
 
@@ -25,6 +25,13 @@ def _setup_epoch(signal) -> float:
 
 def _signal_key(market: str, signal) -> str:
     return f"{market}|{signal.strategy_id}|{signal.direction}|{signal.setup_time}"
+
+
+def _legacy_signal_key(market, signal, offset_seconds):
+    if not offset_seconds:
+        return None
+    broker_label = datetime.fromtimestamp(_setup_epoch(signal), timezone.utc) + timedelta(seconds=offset_seconds)
+    return f"{market}|{signal.strategy_id}|{signal.direction}|{broker_label}"
 
 
 def main(stop=None) -> None:
@@ -65,11 +72,12 @@ def main(stop=None) -> None:
                 if key in seen:
                     continue
 
-                age_minutes = max(0.0, (now - _setup_epoch(signal)) / 60.0)
-                if age_minutes > DEMO_MAX_SIGNAL_AGE_MINUTES:
+                age_seconds = now - _setup_epoch(signal)
+                if age_seconds < -60 or age_seconds > DEMO_MAX_SIGNAL_AGE_MINUTES * 60:
                     seen.add(key)
                     continue
 
+                legacy_key = _legacy_signal_key(market, signal, client.clock.offset_seconds)
                 payload = {
                     "market": market,
                     "symbol_hint": client.symbol,
@@ -79,13 +87,15 @@ def main(stop=None) -> None:
                     "stop_loss": float(signal.stop_loss),
                     "take_profit": float(signal.take_profit),
                     "metadata": asdict(signal),
+                    "time_basis": "UTC",
+                    "broker_clock_offset_seconds": client.clock.offset_seconds,
                 }
                 encoded = json.dumps(payload, default=str, separators=(",", ":"))
 
-                publish_signal(key, payload)
+                publish_signal(key, payload, legacy_key=legacy_key)
                 queued = 0
                 for customer in active_clients():
-                    if enqueue_instruction(customer.id, key, encoded):
+                    if enqueue_instruction(customer.id, key, encoded, legacy_key=legacy_key):
                         queued += 1
 
                 print(

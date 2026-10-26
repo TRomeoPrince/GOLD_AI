@@ -7,6 +7,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from .store import DB_PATH
+from .atomic_json import atomic_write_json, FileBusyError
+import logging
 
 
 def settings_path():
@@ -33,10 +35,7 @@ def validate_settings(settings):
 def save_settings(settings):
     result = validate_settings(settings)
     path = settings_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps(result, indent=2), encoding="utf-8")
-    temp.replace(path)
+    atomic_write_json(path, result)
     return result
 
 
@@ -44,12 +43,22 @@ def load_settings():
     return validate_settings(json.loads(settings_path().read_text(encoding="utf-8")))
 
 
+_status_warnings = {}
+
+
 def write_status(name, **values):
     path = Path.cwd() / "logs" / (name + "_status.json")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".tmp")
-    temp.write_text(json.dumps({"updated": time.time(), **values}), encoding="utf-8")
-    temp.replace(path)
+    try:
+        atomic_write_json(path, {"updated": time.time(), **values})
+        return True
+    except FileBusyError:
+        # Telemetry is not the execution journal. Keep the worker alive and the
+        # previous valid snapshot intact; the UI marks an old heartbeat stale.
+        now = time.monotonic()
+        if now - _status_warnings.get(name, float("-inf")) >= 30:
+            logging.warning("Status snapshot locked; keeping last valid file and retrying next update: %s", path, exc_info=True)
+            _status_warnings[name] = now
+        return False
 
 
 @contextmanager
@@ -65,9 +74,12 @@ def connection():
         con.close()
 
 
-def publish_signal(key, payload):
+def publish_signal(key, payload, legacy_key=None):
     with connection() as con:
-        con.execute("INSERT OR IGNORE INTO owner_signals(signal_key,payload,created) VALUES(?,?,?)", (key, json.dumps(payload, default=str), time.time()))
+        con.execute("BEGIN IMMEDIATE")
+        if legacy_key and con.execute("SELECT 1 FROM owner_signals WHERE signal_key=?", (legacy_key,)).fetchone():
+            return False  # Clock correction must not republish an old physical setup.
+        return con.execute("INSERT OR IGNORE INTO owner_signals(signal_key,payload,created) VALUES(?,?,?)", (key, json.dumps(payload, default=str), time.time())).rowcount == 1
 
 
 def next_signal(after_id, since):

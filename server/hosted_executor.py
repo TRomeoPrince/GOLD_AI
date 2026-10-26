@@ -6,6 +6,7 @@ from datetime import datetime
 import time
 
 import MetaTrader5 as mt5
+from broker.clock import tick_utc_epoch
 
 MAGIC = 560090
 
@@ -215,8 +216,13 @@ def execute_instruction(
     if tick is None:
         return ExecutionResult(False, None, f"No live tick for {symbol}.")
 
-    if strict_history and not 0 <= time.time() - float(getattr(tick, "time", 0)) <= 120:
-        return ExecutionResult(False, None, "STALE_QUOTE: no recent broker tick.")
+    if strict_history:
+        try:
+            quote_age = time.time() - tick_utc_epoch(mt5, symbol, tick)
+        except RuntimeError as exc:
+            return ExecutionResult(False, None, f"STALE_QUOTE: {exc}")
+        if not -5 <= quote_age <= 120:
+            return ExecutionResult(False, None, "STALE_QUOTE: no recent broker tick.")
 
     price = float(tick.ask if direction == "BUY" else tick.bid)
     valid = sl < price < tp if direction == "BUY" else tp < price < sl

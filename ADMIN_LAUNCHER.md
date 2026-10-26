@@ -1,5 +1,7 @@
 # GOLD_AI single-window owner launcher
 
+Latest UTC/status-lock fix: dist_utc/GOLD_AI_Admin.exe. Close any older Admin before using this build. Existing settings, client/subscription records and the execution journal are retained; this build does not enable personal trading automatically.
+
 Latest personal Start-button patch: dist_fixed/GOLD_AI_Admin.exe. An absolute module import fixes the packaged entry point's missing package context. The build is verified with an isolated personal-start controller test that substitutes settings and process spawning; no personal account is activated during that check. Action results are now displayed just below the service/personal controls as well as in the bottom status line. Close any running older Admin before launching this patched EXE; existing saved personal-account settings remain in the same project location.
 
 The latest build includes personal MT5 execution. dist_personal/GOLD_AI_Admin.exe is the tested build output; the normal dist/GOLD_AI_Admin.exe and previous dist_buttons/GOLD_AI_Admin.exe are updated after successful verification when those files are not in use. Close any older Admin instance before opening the latest EXE.
@@ -106,3 +108,19 @@ $env:GOLD_AI_TEST_EXE = 'dist_personal/GOLD_AI_Admin.exe'
 Start-Process '.\dist_personal\GOLD_AI_Admin.exe'
 ```
 The integration smoke uses an isolated database, no enabled markets and no personal config. Unit tests simulate broker execution; verification does not place live trades. A nonblocking Windows pipe watcher prevents numerical-library DLL imports from hanging during background-service startup.
+
+## Broker clock and Windows status-write corrections
+
+The active data path is broker/mt5_client.py -> UTC candle DataFrame -> strategy setup_time -> signal_engine payload -> personal worker age check. Strategies copy the candle time; they do not convert the timezone themselves. The old adapter applied pandas utc=True directly to raw MT5 seconds. A read-only JustMarkets-Live3 check on 26 October 2026 observed raw ticks/candles about 7,200 seconds ahead of true UTC, so that operation mislabeled broker wall-clock data as UTC. MT5's documented UTC contract is described at https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrom_py, but the observed feed does not match it.
+
+broker/clock.py now establishes the current feed offset using at least two advancing live quotes that agree with local UTC within five seconds and with a whole 15-minute offset (bounded to +/-14 hours). Zero-offset feeds also require advancing quotes. No offset is guessed from a candle, a stale snapshot or an old signal. The connection fails if this cannot be established. The offset is fixed for that live connection; a stale feed or changed broker clock requires reconnection, rather than rebasing old data to now. The Windows UTC clock must be correct.
+
+The adapter subtracts that measured offset before strategy scanning and retains raw broker_time plus DataFrame offset metadata for audit. Current quote freshness in personal execution uses the same clock adapter, with five seconds of tick-clock skew tolerance and the existing 120-second stale-quote bound. This does not change personal signal age limits: older than 20 minutes or more than 60 seconds ahead is rejected. The engine now applies both bounds before publishing to customers too. Payloads identify UTC and the measured broker offset.
+
+Calibration establishes the current live-feed offset; it does not infer a broker's historical DST policy for old research bars. Historical analysis spanning offset changes requires independently verified broker timezone history. A signal spanning an uncalibrated clock change remains blocked by the age/quote checks.
+
+Upgrade duplicate protection checks the previous broker-labelled signal key before publishing a corrected UTC key, both in owner_signals and each customer's instruction queue. Existing rows are not rewritten, cleared or replayed. Fresh instructions remain independent of personal registration/subscription; personal no-backlog and durable account/signal claims remain unchanged.
+
+server/atomic_json.py serializes complete JSON with NaN/Infinity rejected, writes a unique temp in the destination directory, flushes/fsyncs, closes it and replaces the target atomically. Windows access/sharing/lock errors are retried seven times with bounded exponential delay. Temp files never share a fixed name. Persistent status-file locks retain the last valid snapshot and log a throttled warning; the worker continues and the UI can mark the old heartbeat stale. Settings save failures are raised to the UI instead of claiming success. Other I/O failures are not silently swallowed. The database execution journal is separate from these status files.
+
+Validation includes the full existing suite, real Windows delete-sharing lock/release, concurrent JSON writers, UTC and +2-hour feeds, stale/future signal boundaries, legacy-key duplicate protection and isolated EXE checks. No live orders are used.

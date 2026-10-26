@@ -480,9 +480,12 @@ def active_clients() -> list[ClientRecord]:
     return [_client(row) for row in rows]
 
 
-def enqueue_instruction(client_id: int, signal_key: str, payload_json: str) -> bool:
+def enqueue_instruction(client_id: int, signal_key: str, payload_json: str, legacy_key: str | None = None) -> bool:
     now = datetime.now(timezone.utc).isoformat()
     with connect() as con:
+        con.execute("BEGIN IMMEDIATE")
+        if legacy_key and con.execute("SELECT 1 FROM instructions WHERE client_id=? AND signal_key=?", (client_id, legacy_key)).fetchone():
+            return False
         try:
             con.execute(
                 """

@@ -1,4 +1,66 @@
-# Latest patch: personal Start button in packaged Admin — 26 October 2026
+# Latest patch: UTC timestamps and Windows status locks — 26 October 2026
+
+Final EXE: C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_utc\GOLD_AI_Admin.exe
+
+SHA256: CC1E2787F1EA8DF189905C371D65DE27B6690CA4620B760A7313F03BF69AE6A8
+
+Build PASS: PyInstaller 6.22.3, Python 3.13.15, windowed Windows x64 one-file bundle.
+
+Root cause: broker/mt5_client.py applied pandas utc=True directly to raw feed seconds. Strategies copied that candle time into setup_time. A read-only JustMarkets-Live3 sample at true UTC 08:35:58 returned an advancing tick labelled 10:35:59, about 7,201 seconds ahead, and bars labelled 10:25/10:30/10:35. Those live bars correspond to 08:25/08:30/08:35 UTC. The adapter labelled broker wall-clock data as UTC instead of converting it. The engine also clamped negative signal age to zero and could publish future signals that the personal worker correctly rejected.
+
+The vendor documents UTC feed times at https://www.mql5.com/en/docs/python_metatrader5/mt5copyratesfrom_py . The observed feed differed from that contract. broker/clock.py now measures a bounded current offset from two advancing live quotes, even for an apparent zero offset. It never calibrates from an old candle or rebases a signal to now. UTC feeds stay unshifted; the adapter converts shifted live bars before strategy scanning and retains raw broker_time. Personal quote freshness uses the same clock. The existing personal 20-minute/60-second signal rules are unchanged; the engine now enforces both bounds before customer publication too.
+
+Calibration uses the current live-feed offset and requires a correct local UTC clock. It does not reconstruct historical broker DST policies. A later read-only check found a non-advancing quote over two minutes old, and calibration correctly refused it. No live readiness claim is made from that stale sample; reconnect with fresh advancing market quotes.
+
+Status-file root cause: fixed .tmp names and one-shot replacement could collide with Windows readers/scanners. The new atomic writer serializes strict complete JSON, creates a unique same-directory temp, flushes/fsyncs/closes it and retries Windows access/sharing/lock errors seven times. A persistent telemetry lock keeps the last valid snapshot, logs a throttled warning and lets the worker continue. Settings failures and unrelated I/O errors are reported, not silently accepted. The database execution journal remains separate.
+
+Preserved: personal execution without client registration/subscription; customer generation without personal settings; risk/news and account checks; no backlog on start; durable duplicate claims. Legacy broker-labelled keys are checked before publishing corrected UTC keys, so the upgrade does not replay an already queued/recorded physical setup. Existing queue/journal rows were not rewritten or cleared.
+
+Exact changed files:
+- .gitignore
+- broker/clock.py
+- broker/mt5_client.py
+- server/atomic_json.py
+- server/hosted_executor.py
+- server/personal_store.py
+- server/signal_engine.py
+- server/store.py
+- scripts/restart_admin.ps1
+- tests/test_atomic_status.py
+- tests/test_clock_upgrade.py
+- tests/test_mt5_clock.py
+- tests/test_personal_trading.py
+- ADMIN_LAUNCHER.md
+- ADMIN_BUILD_RESULT.md
+
+Validation PASS:
+- Full suite: 40 tests, including fresh/stale/future age boundaries, source-to-strategy UTC conversion, advancing/unchanging clocks, duplicate/backlog behavior, legacy-key upgrade protection, concurrent JSON writers, permission retries, persistent lock preservation and a real Windows handle denying delete sharing during replacement.
+- Source Admin lifecycle smoke.
+- Final rebuilt EXE lifecycle smoke: isolated database, no enabled markets, substituted personal-start settings/process spawning, API health, engine Start/Stop/Start, unchanged seeded client/risk/subscription rows and clean shutdown without forced kill.
+- Final frozen personal-worker missing-settings path: safe error exit without a terminal connection.
+- Restart helper: PowerShell parser and -ValidateOnly check; no live app was closed or started.
+- No live test orders were placed. Existing unrelated files and the client repo were unchanged.
+
+Build/test commands from the owner repo:
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist_utc --workpath build/admin_pyi build/GOLD_AI_Admin.spec
+$env:GOLD_AI_TEST_EXE = 'dist_utc/GOLD_AI_Admin.exe'
+.venv\Scripts\python.exe tests\smoke_admin_exe.py
+.venv\Scripts\python.exe tests\smoke_personal_exe.py
+```
+
+Restart command in PowerShell:
+```powershell
+& 'C:\Users\USER\Desktop\Bots\Forex\AMD1\scripts\restart_admin.ps1'
+```
+The helper requests normal shutdown of only this checkout's GOLD_AI_Admin processes, waits up to 40 seconds and opens dist_utc/GOLD_AI_Admin.exe. It force-kills nothing and leaves shared ngrok alone. Personal trading remains off until explicitly started. The EXE is a local artifact outside the source commit; the source commit is provided in the task response and git log -1 --format=%H.
+
+---
+
+## Earlier build records
+
+# Previous patch: personal Start button in packaged Admin — 26 October 2026
 
 Artifact: dist_fixed/GOLD_AI_Admin.exe
 SHA256: 0518a5bbf25ea10e1ce9531e7d1e48d183826de513c1ccfe6363f083be1ef88d

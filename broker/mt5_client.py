@@ -5,6 +5,7 @@ from typing import Optional
 
 import MetaTrader5 as mt5
 import pandas as pd
+from .clock import BrokerClock
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class MT5Client:
     def __init__(self, symbol_hint: str = "XAUUSD") -> None:
         self.symbol_hint = symbol_hint
         self.symbol: Optional[str] = None
+        self.clock: Optional[BrokerClock] = None
 
     def connect(self) -> ConnectionStatus:
         if not mt5.initialize():
@@ -27,12 +29,13 @@ class MT5Client:
 
         terminal = mt5.terminal_info()
         account = mt5.account_info()
-        if terminal is None or account is None:
+        if terminal is None or account is None or not getattr(terminal, "connected", False):
             code, message = mt5.last_error()
             mt5.shutdown()
-            raise RuntimeError(f"MT5 terminal/account info unavailable: {code} | {message}")
+            raise RuntimeError(f"MT5 terminal/account unavailable or disconnected: {code} | {message}")
 
         self.symbol = self._resolve_symbol()
+        self.clock = BrokerClock.detect(mt5, self.symbol)
 
         return ConnectionStatus(
             connected=True,
@@ -88,8 +91,13 @@ class MT5Client:
                 f"No candle data returned for {self.symbol}: {code} | {message}"
             )
 
+        if self.clock is None:
+            raise RuntimeError("MT5 clock was not calibrated at connection.")
+        self.clock.validate_tick(mt5.symbol_info_tick(self.symbol))
         frame = pd.DataFrame(rates)
-        frame["time"] = pd.to_datetime(frame["time"], unit="s", utc=True)
+        frame["broker_time"] = frame["time"]
+        frame["time"] = pd.to_datetime(self.clock.to_utc_epoch(frame["time"]), unit="s", utc=True)
+        frame.attrs["broker_clock_offset_seconds"] = self.clock.offset_seconds
         return frame
 
     @staticmethod

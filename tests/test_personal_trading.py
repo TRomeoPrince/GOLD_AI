@@ -96,6 +96,22 @@ class PersonalGuardTests(unittest.TestCase):
         with patch.object(pw,'news_lock_enabled',return_value=False),patch.object(pw,'execute_instruction') as execute:
             self.assertEqual(pw.execute_signal(self.row,self.settings,self.stop)[0],'SKIPPED')
             execute.assert_not_called()
+    def test_signal_age_limits_unchanged(self):
+        from datetime import timedelta
+        now=datetime(2026,10,26,8,27,tzinfo=timezone.utc)
+        clock=Mock()
+        clock.now.return_value=now
+        clock.fromisoformat.side_effect=datetime.fromisoformat
+        policy={'risk_per_trade_pct':.5,'max_open_risk_pct':20,'max_daily_loss_pct':4,'daily_profit_target_enabled':False,'daily_profit_target_pct':0}
+        result=NS(sent=True,ticket=1,message='ok',planned_risk_pct=.5,volume=.01)
+        with patch.object(pw,'datetime',clock),patch.object(pw,'news_lock_enabled',return_value=False),patch.object(pw,'effective_risk_policy',return_value=policy),patch.object(pw,'execute_instruction',return_value=result) as execute:
+            for delta,expected in ((-120,'EXECUTED'),(-1200,'EXECUTED'),(60,'EXECUTED'),(-1201,'SKIPPED'),(61,'SKIPPED')):
+                with self.subTest(seconds_from_now=delta):
+                    self.row['payload']=json.dumps({'setup_time':(now+timedelta(seconds=delta)).isoformat(),'direction':'BUY'})
+                    execute.reset_mock()
+                    self.assertEqual(pw.execute_signal(self.row,self.settings,self.stop)[0],expected)
+                    if expected=='SKIPPED':execute.assert_not_called()
+
     def test_global_policy_and_final_order_guard(self):
         policy={'risk_per_trade_pct':.5,'max_open_risk_pct':20,'max_daily_loss_pct':4,'daily_profit_target_enabled':False,'daily_profit_target_pct':0}
         result=NS(sent=True,ticket=1,message='ok',planned_risk_pct=.5,volume=.01)
@@ -124,8 +140,12 @@ class ExecutorTests(unittest.TestCase):
         self.mt5.order_check.return_value=NS(retcode=0)
         self.patch=patch.object(executor,'mt5',self.mt5)
         self.patch.start()
+        self.clock_patch=patch.object(executor,"tick_utc_epoch",side_effect=lambda api,symbol,tick:tick.time)
+        self.clock_patch.start()
         self.payload={'direction':'BUY','symbol_hint':'XAUUSD','stop_loss':1990,'take_profit':2020}
-    def tearDown(self):self.patch.stop()
+    def tearDown(self):
+        self.clock_patch.stop()
+        self.patch.stop()
     def execute(self,**kwargs):
         return executor.execute_instruction(self.payload,.9,40,5,max_single_risk_pct=2,strict_history=True,include_all_positions=True,**kwargs)
     def test_minimum_lot_above_two_percent_rejected(self):
@@ -162,7 +182,7 @@ class EngineRoutingTests(unittest.TestCase):
         Signal=make_dataclass('Signal',['strategy_id','direction','setup_time','stop_loss','take_profit'])
         signal=Signal('TEST','BUY',datetime.now(timezone.utc).isoformat(),1990,2020)
         stop=threading.Event()
-        client=Mock(symbol='XAUUSD')
+        client=Mock(symbol='XAUUSD',clock=NS(offset_seconds=0))
         registry=Mock()
         registry.scan.return_value=[signal]
         with patch.object(engine,'ACTIVE_MARKETS',{'GOLD':'XAUUSD'}),patch.object(engine,'MT5Client',return_value=client),patch.object(engine,'StrategyRegistry',return_value=registry),patch.object(engine,'active_clients',return_value=[]),patch.object(engine,'news_lock_enabled',return_value=False),patch.object(engine,'write_status'),patch.object(engine,'publish_signal') as publish,patch.object(stop,'wait',side_effect=lambda _:stop.set()):
