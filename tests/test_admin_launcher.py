@@ -59,6 +59,16 @@ class LauncherTests(unittest.TestCase):
                 services.processes.clear()
                 services.stop()
 
+    def test_personal_start_from_script_entrypoint(self):
+        import runpy
+        from unittest.mock import Mock
+        module=runpy.run_path(str(Path(__file__).resolve().parents[1]/'server/admin_launcher.py'),run_name='frozen_entrypoint_test')
+        services=object.__new__(module['Services'])
+        services.start=Mock()
+        with patch('server.personal_store.load_settings',return_value={}):
+            services.start_personal()
+        services.start.assert_called_once_with(('signal_engine','personal'))
+
     def test_missing_token_visible(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'GOLD_AI_CLIENT_TELEGRAM_BOT_TOKEN':''}):
             services=Services(Path(folder))

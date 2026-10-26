@@ -174,7 +174,7 @@ class Services:
         return result
 
     def start_personal(self):
-        from .personal_store import load_settings
+        from server.personal_store import load_settings
         load_settings()  # Validated before starting either service.
         self.start(("signal_engine", "personal"))
 
@@ -258,6 +258,21 @@ def main():
                     return
                 process = services.processes.get("signal_engine")
                 if phase[0] == 0:
+                    # Exercise this controller from the packaged script entry point,
+                    # where relative imports have no package context. Never spawn
+                    # a personal worker or use real settings in this regression check.
+                    from server import personal_store
+                    original_loader = personal_store.load_settings
+                    original_start = services.start
+                    requests = []
+                    personal_store.load_settings = lambda: {}
+                    services.start = lambda names: requests.append(tuple(names))
+                    try:
+                        services.start_personal()
+                    finally:
+                        personal_store.load_settings = original_loader
+                        services.start = original_start
+                    assert requests == [("signal_engine", "personal")]
                     app.personal_settings()
                     for child in app.winfo_children():
                         if child.winfo_class() == "Toplevel":

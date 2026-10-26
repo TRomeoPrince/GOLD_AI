@@ -1,5 +1,7 @@
 # GOLD_AI single-window owner launcher
 
+Latest personal Start-button patch: dist_fixed/GOLD_AI_Admin.exe. An absolute module import fixes the packaged entry point's missing package context. The build is verified with an isolated personal-start controller test that substitutes settings and process spawning; no personal account is activated during that check. Action results are now displayed just below the service/personal controls as well as in the bottom status line. Close any running older Admin before launching this patched EXE; existing saved personal-account settings remain in the same project location.
+
 The latest build includes personal MT5 execution. dist_personal/GOLD_AI_Admin.exe is the tested build output; the normal dist/GOLD_AI_Admin.exe and previous dist_buttons/GOLD_AI_Admin.exe are updated after successful verification when those files are not in use. Close any older Admin instance before opening the latest EXE.
 
 Double-click dist\GOLD_AI_Admin.exe in this checkout. API and configured Telegram start immediately; the signal engine waits for Start Automated Trading. Stop Automated Trading stops signal generation while keeping the API and Telegram running. Already queued instructions and existing positions are unchanged. Both START_GOLD_AI.bat and server\run_owner_stack.bat now open that same app.

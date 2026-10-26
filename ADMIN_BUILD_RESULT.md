@@ -1,3 +1,31 @@
+# Latest patch: personal Start button in packaged Admin — 26 October 2026
+
+Artifact: dist_fixed/GOLD_AI_Admin.exe
+SHA256: 0518a5bbf25ea10e1ce9531e7d1e48d183826de513c1ccfe6363f083be1ef88d
+
+Fixed the packaged entry point's relative import in Services.start_personal. It previously raised “attempted relative import with no known parent package” before spawning the personal worker; Personal remained off. The import now uses the absolute server module path. Action feedback is visible below the service/personal controls, rather than only in the bottom status line.
+
+Validation PASS:
+- 23 unit tests, including a script-entrypoint personal-start regression.
+- Source and final frozen EXE lifecycle tests. The frozen smoke now exercises the personal-start controller with isolated mocked settings/process spawning before testing real engine Start/Stop/Start, API health and clean shutdown.
+- Frozen personal worker missing-settings failure path.
+- Seeded client/risk/subscription rows preserved. No real personal worker or broker order was activated during verification.
+
+Changed: server/admin_launcher.py, server/admin_gui.py, tests/test_admin_launcher.py, ADMIN_LAUNCHER.md and this report.
+
+The running dist/GOLD_AI_Admin.exe was left untouched. Close it before launching the corrected build:
+Start-Process 'C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_fixed\GOLD_AI_Admin.exe'
+
+Build:
+.venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath dist_fixed --workpath build/admin_pyi build/GOLD_AI_Admin.spec
+
+Test:
+$env:GOLD_AI_TEST_EXE = 'dist_fixed/GOLD_AI_Admin.exe'
+.venv\Scripts\python.exe tests\smoke_admin_exe.py
+.venv\Scripts\python.exe tests\smoke_personal_exe.py
+
+## Previous personal build record
+
 # GOLD_AI Admin personal trading build — 26 October 2026
 
 Build PASS: Python 3.13.15, PyInstaller 6.22.3, windowed Windows x64 one-file bundle.

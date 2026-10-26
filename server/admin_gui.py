@@ -71,8 +71,10 @@ class GoldAIAdmin(tk.Tk):
             if on_result is not None and isinstance(result, dict):
                 on_result(result)
                 self.status.set("MT5 account detected. Check the account details, then Save Settings.")
+                self.control_message.set(self.status.get())
             else:
                 self.status.set(result or "Done.")
+                self.control_message.set(self.status.get())
             self.control_buttons[:] = [b for b in self.control_buttons if b.winfo_exists()]
             for button in self.control_buttons:
                 button.configure(state="normal")
@@ -210,6 +212,9 @@ class GoldAIAdmin(tk.Tk):
                 button.pack(side="left", padx=5)
                 self.control_buttons.append(button)
             ttk.Label(personal, text="No Client EXE required for your account.").pack(side="left", padx=10)
+
+        self.control_message = tk.StringVar(value="Personal trading is off until you click Start My MT5 Trading.")
+        ttk.Label(self, textvariable=self.control_message, wraplength=1100).pack(fill="x", padx=18, pady=(0, 6))
 
         body = ttk.Frame(self, padding=(14, 0, 14, 14))
         body.pack(fill="both", expand=True)
