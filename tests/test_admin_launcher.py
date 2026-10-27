@@ -67,7 +67,7 @@ class LauncherTests(unittest.TestCase):
         services.start=Mock()
         with patch('server.personal_store.load_settings',return_value={}):
             services.start_personal()
-        services.start.assert_called_once_with(('signal_engine','personal'))
+        services.start.assert_called_once_with(('signal_engine','personal','notifications'))
 
     def test_missing_token_visible(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'GOLD_AI_CLIENT_TELEGRAM_BOT_TOKEN':''}):

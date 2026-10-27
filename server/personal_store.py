@@ -97,4 +97,15 @@ def claim_signal(account, key):
 
 def finish_signal(account, key, state, message):
     with connection() as con:
-        con.execute("UPDATE personal_deliveries SET state=?,message=?,updated=? WHERE account=? AND signal_key=?", (state, message, time.time(), account, key))
+        updated = con.execute("UPDATE personal_deliveries SET state=?,message=?,updated=? WHERE account=? AND signal_key=?", (state, message, time.time(), account, key)).rowcount
+    if not updated:
+        return False
+    try:
+        from .telegram_notifications import enqueue_owner_event
+        enqueue_owner_event(
+            f"personal-result:{account}:{key}",
+            f"GOLD_AI PERSONAL {state}\nAccount: {account}\nSignal: {key}\n{message}",
+            database=DB_PATH,
+        )
+    except Exception as exc:
+        logging.warning("Personal result saved but alert could not be queued (%s)", type(exc).__name__)

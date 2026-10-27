@@ -1,8 +1,10 @@
 # GOLD_AI single-window owner launcher
 
-Latest UTC/status-lock fix: dist_utc/GOLD_AI_Admin.exe. Close any older Admin before using this build. Existing settings, client/subscription records and the execution journal are retained; this build does not enable personal trading automatically.
+Latest Telegram connectivity/personal-alert build: dist_telegram/GOLD_AI_Admin.exe. Close the older Admin, open this build, then explicitly start personal trading. Owner alert delivery runs in a separate hidden sender; it never places or retries orders.
 
-Latest personal Start-button patch: dist_fixed/GOLD_AI_Admin.exe. An absolute module import fixes the packaged entry point's missing package context. The build is verified with an isolated personal-start controller test that substitutes settings and process spawning; no personal account is activated during that check. Action results are now displayed just below the service/personal controls as well as in the bottom status line. Close any running older Admin before launching this patched EXE; existing saved personal-account settings remain in the same project location.
+Previous UTC/status-lock build: dist_utc/GOLD_AI_Admin.exe. The newer Telegram build includes these fixes. Existing settings, client/subscription records and the execution journal are retained; personal trading is not enabled automatically.
+
+Previous personal Start-button build: dist_fixed/GOLD_AI_Admin.exe. An absolute module import fixes the packaged entry point's missing package context. The build is verified with an isolated personal-start controller test that substitutes settings and process spawning; no personal account is activated during that check. Action results are now displayed just below the service/personal controls as well as in the bottom status line. These fixes are retained in newer builds; existing saved personal-account settings remain in the same project location.
 
 The latest build includes personal MT5 execution. dist_personal/GOLD_AI_Admin.exe is the tested build output; the normal dist/GOLD_AI_Admin.exe and previous dist_buttons/GOLD_AI_Admin.exe are updated after successful verification when those files are not in use. Close any older Admin instance before opening the latest EXE.
 
@@ -89,7 +91,7 @@ To trade your own account from Admin:
 Personal trading starts only after an explicit click on every Admin session. No client record or subscription is created or required. If the same login/server is already an ACTIVE client, pause that client and close its separate Client EXE or hosted worker first; the personal worker refuses duplicate active execution paths. It also refuses an ACTIVE/CONNECTING hosted worker for the same account. Changing account or risk configuration requires stopping personal trading first.
 
 Personal settings are local in server/personal_account.json (ignored by Git). The expected login and server are checked continuously and immediately before each order; account switching or loss of permission stops the worker. This personal path uses the existing hosted executor with stricter optional checks, without changing the valid hosted-customer defaults:
-- Local configured risk per trade is 0.1–2%, open risk 5–40% and daily loss 2–10%; owner/global controls may make these stricter. The 2% single-order ceiling also applies when broker minimum lot is larger than normal sizing.
+- Local configured risk per trade is 0.1â€“2%, open risk 5â€“40% and daily loss 2â€“10%; owner/global controls may make these stricter. The 2% single-order ceiling also applies when broker minimum lot is larger than normal sizing.
 - News lock and the global daily-profit target apply. Broker symbol resolution, current SL/TP geometry and lot/filling checks remain in use.
 - Personal portfolio risk counts all account positions, including manual positions. An unprotected position with no SL blocks new personal entries. Missing daily history or quotes older than 120 seconds also block submission.
 - Personal execution consumes the same signal payloads generated for customers through new owner_signals/personal_deliveries tables; it does not run a second strategy scan. No backlog is executed at Start/restart. The existing signal age limit also applies.
@@ -124,3 +126,29 @@ Upgrade duplicate protection checks the previous broker-labelled signal key befo
 server/atomic_json.py serializes complete JSON with NaN/Infinity rejected, writes a unique temp in the destination directory, flushes/fsyncs, closes it and replaces the target atomically. Windows access/sharing/lock errors are retried seven times with bounded exponential delay. Temp files never share a fixed name. Persistent status-file locks retain the last valid snapshot and log a throttled warning; the worker continues and the UI can mark the old heartbeat stale. Settings save failures are raised to the UI instead of claiming success. Other I/O failures are not silently swallowed. The database execution journal is separate from these status files.
 
 Validation includes the full existing suite, real Windows delete-sharing lock/release, concurrent JSON writers, UTC and +2-hour feeds, stale/future signal boundaries, legacy-key duplicate protection and isolated EXE checks. No live orders are used.
+
+## Telegram: client commands and owner personal alerts
+
+The original Admin Telegram worker handled /link, /status, /subscription, /help and manual client messages; it had no automatic personal-trade notification hooks. Legacy demo/headway bots used another controller that the Admin does not start. A Telegram process being alive was therefore insufficient evidence that personal alerts were implemented or that the connection worked.
+
+The updated Admin shows separate Telegram command connectivity and Owner alerts status. Telegram reports CONNECTING, CONNECTED, ERROR, REPLY_ERROR, NOT_CONFIGURED or STOPPED. Network/DNS/TLS errors and Bot API authentication/conflict/rate-limit errors are summarized without exposing tokens or token-bearing URLs. A failed command reply remains visible across successful empty polls until a later reply succeeds. Commands that may already have changed the database, such as /link, are not replayed after a send failure. Retry waits are interruptible, unsuccessful Bot API JSON is no longer accepted as success, and status-file failures cannot stop polling or sending.
+
+Personal readiness, personal worker errors, and committed EXECUTED/REJECTED/SKIPPED/ERROR_REVIEW outcomes are queued to owner_telegram_outbox after the execution journal is committed. They are delivered by the notifications background child. Labels describe the actual outcome: READY/SKIPPED/REJECTED are not order execution confirmations. No entry/exit event is invented, and this patch does not add a broker-position closure watcher or automated customer trade alerts. Customer usernames alone are not message destinations; customer command/manual-message delivery still requires /link PAIRING_CODE in the bot.
+
+Owner configuration is read from this project's .env/environment:
+
+- Token priority: GOLD_AI_OWNER_TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_TOKEN, GOLD_AI_CLIENT_TELEGRAM_BOT_TOKEN.
+- Chat priority: GOLD_AI_OWNER_TELEGRAM_CHAT_ID, TELEGRAM_ADMIN_ID.
+- GOLD_AI_OWNER_TELEGRAM_ENABLED=false disables owner alerts.
+
+The existing owner chat ID and shared client-bot token can therefore be reused without registering the personal account as a client or starting a second getUpdates poller. Use explicit GOLD_AI_OWNER_* settings for per-project isolation. The owner must have opened/started the chosen bot and not blocked it. Do not paste bot tokens into chat or commit .env. This update does not change existing secrets or recipients.
+
+Queue rows store the configured chat snapshot and token fingerprint, never the token. Unique event keys prevent repeat enqueuing. Successful SENT rows are not resent. A short lease recovers interrupted sends; failed requests retry with bounded backoff, at most five attempts. Configuration changes hold old rows for their original destination instead of routing private alerts to a different chat/bot. Network failure cannot roll back execution state or cause order retries. Telegram remote delivery cannot be guaranteed exactly once after an ambiguous network timeout/crash, so an alert may repeat while the underlying order is never retried by the notification worker.
+
+Owner-alert status reports delivery/retry/failure/held/recovery information. Inspect logs/notifications.log, logs/notifications_status.json and owner_telegram_outbox for delivery results; logs/telegram.log and logs/telegram_status.json cover command polling. A delivery count/message ID confirms Telegram accepted an alert; IDLE or a live process alone does not prove delivery. Personal alerts begin with new events after the new build starts; old trade history is not replayed.
+
+Open the latest build directly from PowerShell after closing Admin (no .ps1 helper needed):
+```powershell
+Start-Process 'C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_telegram\GOLD_AI_Admin.exe'
+```
+Then click Start My MT5 Trading. Wait for Personal: READY, and watch the Owner alerts delivered count. A disconnected personal terminal produces an ERROR event instead of a false readiness/trade claim. Verification uses mocked sending only; no real test messages or live orders are sent.

@@ -81,6 +81,9 @@ def worker(name):
     elif name == "personal_probe":
         from server.personal_worker import probe
         probe()
+    elif name == "notifications":
+        from server.telegram_notifications import run
+        run(stop)
     elif name == "telegram":
         from server.client_telegram import ClientTelegramBot
         bot = ClientTelegramBot()
@@ -105,7 +108,7 @@ class Services:
         self.logs = root / "logs"
         self.logs.mkdir(parents=True, exist_ok=True)
 
-    def start(self, names=("api", "signal_engine", "telegram"), extra_env=None):
+    def start(self, names=("api", "signal_engine", "telegram", "notifications"), extra_env=None):
         # Do not attach to or kill an independently launched API.
         api = self.processes.get("api")
         if "api" in names and (api is None or api.poll() is not None):
@@ -176,7 +179,7 @@ class Services:
     def start_personal(self):
         from server.personal_store import load_settings
         load_settings()  # Validated before starting either service.
-        self.start(("signal_engine", "personal"))
+        self.start(("signal_engine", "personal", "notifications"))
 
     def runtime_status(self, name):
         import json
@@ -198,7 +201,7 @@ class Services:
 
     def status(self):
         rows = [f"{name}: " + (f"Running (PID {p.pid})" if p.poll() is None else f"Exited ({p.returncode}); see logs") for name, p in self.processes.items()]
-        return self.health + " | Engine: " + self.runtime_status("signal_engine") + " | Personal: " + self.runtime_status("personal") + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.items()])
+        return self.health + " | Engine: " + self.runtime_status("signal_engine") + " | Personal: " + self.runtime_status("personal") + " | Telegram: " + self.runtime_status("telegram") + " | Owner alerts: " + self.runtime_status("notifications") + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.items()])
 
     def stop_named(self, names):
         processes = [p for name, p in self.processes.items() if name in names]
@@ -247,7 +250,7 @@ def main():
     try:
         from server.admin_gui import GoldAIAdmin
         app = GoldAIAdmin(services)
-        services.start(("api", "telegram"))
+        services.start(("api", "telegram", "notifications"))
         if "--smoke-test" in sys.argv:
             assert "signal_engine" not in services.processes
             assert "personal" not in services.processes
@@ -272,7 +275,7 @@ def main():
                     finally:
                         personal_store.load_settings = original_loader
                         services.start = original_start
-                    assert requests == [("signal_engine", "personal")]
+                    assert requests == [("signal_engine", "personal", "notifications")]
                     app.personal_settings()
                     for child in app.winfo_children():
                         if child.winfo_class() == "Toplevel":

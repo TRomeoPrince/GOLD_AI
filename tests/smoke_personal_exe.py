@@ -8,7 +8,7 @@ exe=Path(os.getenv('GOLD_AI_TEST_EXE','dist_personal/GOLD_AI_Admin.exe')).resolv
 with tempfile.TemporaryDirectory(prefix='gold-personal-smoke-') as folder:
     root=Path(folder)
     (root/'server').mkdir()
-    env={**os.environ,'GOLD_AI_HOME':folder,'GOLD_AI_STATE_DIR':str(root/'server'),'GOLD_AI_DB_PATH':str(root/'server/test.db')}
+    env={**os.environ,'GOLD_AI_HOME':folder,'GOLD_AI_OWNER_TELEGRAM_ENABLED':'false','GOLD_AI_STATE_DIR':str(root/'server'),'GOLD_AI_DB_PATH':str(root/'server/test.db')}
     process=subprocess.run([str(exe),'--service','personal'],env=env,stdin=subprocess.DEVNULL,timeout=30)
     status=json.loads((root/'logs/personal_status.json').read_text())
     assert process.returncode==1 and status['state']=='ERROR',status

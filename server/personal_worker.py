@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
+import uuid
+import logging
 from datetime import datetime, timezone
 from types import SimpleNamespace
 import MetaTrader5 as mt5
@@ -76,8 +78,19 @@ def execute_signal(row, settings, stop):
     return ("EXECUTED" if result.sent else "REJECTED"), f"{result.message}; ticket={result.ticket}; risk={result.planned_risk_pct:.3f}%; volume={result.volume}"
 
 
+def _runtime_alert(event_key, state, account, message):
+    try:
+        from . import personal_store
+        from .telegram_notifications import enqueue_owner_event
+        enqueue_owner_event(event_key, f"GOLD_AI PERSONAL {state}\nAccount: {account}\n{message}", database=personal_store.DB_PATH)
+    except Exception as exc:
+        logging.warning("Personal runtime alert could not be queued (%s)", type(exc).__name__)
+
+
 def run(stop):
     lock = None
+    run_id = uuid.uuid4().hex
+    key = "not connected"
     try:
         settings = load_settings()
         import hashlib
@@ -98,6 +111,7 @@ def run(stop):
         since, cursor = time.time(), 0  # No backlog trades on Start or restart.
         last_result = "Waiting for fresh signals"
         print(f"PERSONAL MT5 READY: {key}", flush=True)
+        _runtime_alert(f"personal-ready:{run_id}", "READY", key, "Connected and waiting for fresh signals. No order has been placed by this readiness event.")
         while not stop.is_set():
             account = verify_account(settings, stop)
             write_status("personal", state="READY", login=int(account.login), server=str(account.server), equity=float(account.equity), message=f"{key}: {last_result}")
@@ -119,6 +133,7 @@ def run(stop):
         write_status("personal", state="STOPPED", message="Personal trading stopped; positions remain at the broker.")
     except Exception as exc:
         write_status("personal", state="ERROR", message=str(exc))
+        _runtime_alert(f"personal-error:{run_id}", "ERROR", key, str(exc))
         raise
     finally:
         mt5.shutdown()

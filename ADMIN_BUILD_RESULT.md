@@ -1,4 +1,78 @@
-# Latest patch: UTC timestamps and Windows status locks — 26 October 2026
+# Latest patch: Telegram connectivity and personal alerts - 27 October 2026
+
+Final EXE: C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_telegram\GOLD_AI_Admin.exe
+
+SHA256: FBEEEAC339EF988416032B82AEB38CF529A97E4CB4D4F3DC05B6D90ABD16C3EA
+
+Build PASS: clean PyInstaller 6.22.3 build, Python 3.13.15, windowed Windows x64 one-file bundle. This includes the earlier UTC/status-lock corrections.
+
+Diagnosis: the Admin's client Telegram worker implemented command replies and manual client messages, but personal execution had no notification hooks. Historical Telegram logs also showed DNS lookup failures, TLS/read timeouts and interrupted connections. Read-only getMe/getWebhookInfo/getChat checks succeeded during diagnosis: the configured bot is @Princetradingbot, no webhook is active, and the existing numeric owner destination is accessible. A process marked Running did not prove message delivery. Customer records had usernames but no linked chat IDs.
+
+Changes: personal readiness/errors and committed execution outcomes now queue owner alerts. A separate outbound-only child persists delivery/retry/failed/held states, deduplicates event keys and SENT results, and recovers interrupted claims. At most five send attempts use bounded backoff. Recorded chat destinations and token fingerprints prevent configuration changes from rerouting private alerts. Sending cannot roll back a trade record or retry an order. Network timeouts/crashes can leave message delivery ambiguous, so remote messages cannot be guaranteed exactly once.
+
+Admin shows separate command connectivity and owner-alert status. Failed command replies remain visible until a later reply succeeds; /link database actions are not repeated after a send failure. Telegram errors omit tokens and token-bearing URLs. Status-file failures cannot stop the command bot or sender. Existing owner settings are reused; no .env, recipient or token was changed. Owner configuration priority and logs are documented in ADMIN_LAUNCHER.md.
+
+Scope: new personal events only. No old trading history is replayed. This patch does not add position-close notifications or automated customer trade alerts. Customer command/manual delivery requires /link PAIRING_CODE in @Princetradingbot; storing a username alone does not link a chat. The client repository is unchanged.
+
+Exact changed files:
+
+- server/admin_launcher.py
+- server/client_telegram.py
+- server/personal_store.py
+- server/personal_worker.py
+- server/telegram_notifications.py
+- tests/test_admin_launcher.py
+- tests/test_client_telegram.py
+- tests/test_telegram_notifications.py
+- tests/test_personal_telegram_hooks.py
+- tests/smoke_admin_exe.py
+- tests/smoke_personal_exe.py
+- ADMIN_LAUNCHER.md
+- ADMIN_BUILD_RESULT.md
+
+Validation PASS:
+
+- Full suite: 73 tests. Includes 16 command/API tests, 13 durable sender tests, four personal hook tests and all 40 existing launcher/trading/UTC/lock tests.
+- Isolated source Admin lifecycle check after final source edits.
+- Clean rebuilt EXE lifecycle check: API health, engine Start/Stop/Start, compiled personal-start controller, owner-alert module safely disabled, unchanged seeded client/risk/subscription records and clean shutdown without forced termination.
+- Frozen personal-worker missing-settings path: safe error exit without connecting MT5.
+- git diff --check.
+- Telegram sending was mocked or explicitly disabled for all tests. No real test messages or live orders were sent. The real Admin was not restarted or personal trading enabled during verification.
+
+Exact test/build commands from C:\Users\USER\Desktop\Bots\Forex\AMD1:
+
+```powershell
+.venv\Scripts\python.exe -m unittest discover -s tests -v
+.venv\Scripts\python.exe tests\smoke_admin_exe.py --source
+.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm --distpath dist_telegram --workpath build/admin_pyi build/GOLD_AI_Admin.spec
+$env:GOLD_AI_TEST_EXE = 'dist_telegram/GOLD_AI_Admin.exe'
+.venv\Scripts\python.exe tests\smoke_admin_exe.py
+.venv\Scripts\python.exe tests\smoke_personal_exe.py
+```
+
+Close the older Admin with its X, then open the new EXE directly (no script file or execution-policy change):
+
+```powershell
+Start-Process -FilePath 'C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_telegram\GOLD_AI_Admin.exe' -WorkingDirectory 'C:\Users\USER\Desktop\Bots\Forex\AMD1'
+```
+
+Alternatively paste this guarded graceful restart into PowerShell. It closes only visible GOLD_AI_Admin windows from this owner checkout, waits for their normal child shutdown, and stops if the old app cannot close. It never force-kills a trading worker:
+
+```powershell
+$goldProject = 'C:\Users\USER\Desktop\Bots\Forex\AMD1'
+$goldAdmins = Get-Process -Name GOLD_AI_Admin -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and $_.Path.StartsWith($goldProject + '\', [System.StringComparison]::OrdinalIgnoreCase) -and $_.MainWindowHandle -ne 0
+}
+foreach ($goldAdmin in $goldAdmins) {
+    if (-not $goldAdmin.CloseMainWindow()) { throw 'Close the old Admin window manually, then retry.' }
+    if (-not $goldAdmin.WaitForExit(40000)) { throw 'Old Admin is still shutting down; do not start a second copy.' }
+}
+Start-Process -FilePath "$goldProject\dist_telegram\GOLD_AI_Admin.exe" -WorkingDirectory $goldProject
+```
+
+The earlier scripts/restart_admin.ps1 targets the previous UTC build and may be blocked by the machine's script policy. Use the direct command above for this build. Personal trading still starts only after clicking Start My MT5 Trading. Expect a new READY or ERROR event; a delivered count/message ID shows Telegram acceptance. An idle sender is not proof that a message reached a phone.
+
+# Previous patch: UTC timestamps and Windows status locks — 26 October 2026
 
 Final EXE: C:\Users\USER\Desktop\Bots\Forex\AMD1\dist_utc\GOLD_AI_Admin.exe
 
