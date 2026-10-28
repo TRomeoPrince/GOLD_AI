@@ -464,11 +464,11 @@ def azt_telemetry(req: AZTTelemetryRequest, authorization: str = Header(default=
     from . import trade_telemetry
     from .store import DB_PATH
     result = _business(trade_telemetry.ingest_snapshot, client.id, account_key, req.snapshot, database=DB_PATH)
-    for state, trades in (("open", result.get("new_open", [])), ("closed", result.get("new_closed", []))):
+    for state, trades in (("open", result.get("new_open", [])), ("closed", result.get("new_closed", [])), ("sl_updated", result.get('new_stop_updates', []))):
         for trade in trades:
             try:
                 from .client_notifications import enqueue_trade_event
-                enqueue_trade_event(client.id, trade, event_key=f"{state}:{account_key}:{trade.get('ticket','')}", database=DB_PATH)
+                enqueue_trade_event(client.id, trade, event_key=trade.get('event_key') or f"{state}:{account_key}:{trade.get('ticket','')}", database=DB_PATH)
             except Exception:
                 # Trade telemetry is committed regardless of notification I/O.
                 pass

@@ -36,3 +36,5 @@ server/workspace_settings.json
 server/.workspace_settings.*.tmp
 build/azt_pyi/
 dist_azt/
+dist_telegram_style/
+build/telegram_style_pyi/

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import floor, isfinite
 from datetime import datetime, timezone
 import time
@@ -20,6 +20,7 @@ class ExecutionResult:
     volume: float = 0.0
     planned_risk_pct: float = 0.0
     portfolio_after_pct: float = 0.0
+    details: dict = field(default_factory=dict)
 
 
 def _resolve_symbol(hint: str) -> str:
@@ -316,6 +317,15 @@ def execute_instruction(
         ticket = int(
             getattr(result, "order", 0) or getattr(result, "deal", 0) or 0
         ) or None
+        details = {}
+        if done:
+            try:
+                from .trade_events import execution_details
+                details = execution_details(mt5, result, request, payload, ticket=ticket, risk_pct=single_pct,
+                                            portfolio_after_pct=post_pct, max_open_risk_pct=max_open_risk_pct, verified_account=account)
+            except Exception:
+                # A confirmed broker result must survive optional presentation failure.
+                pass
         return ExecutionResult(
             done,
             ticket,
@@ -323,6 +333,7 @@ def execute_instruction(
             volume,
             single_pct,
             post_pct,
+            details,
         )
 
     return ExecutionResult(

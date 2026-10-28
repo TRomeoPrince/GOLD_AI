@@ -96,7 +96,8 @@ def execute_signal(row, settings, stop):
         if age_now < -60 or age_now > DEMO_MAX_SIGNAL_AGE_MINUTES * 60:
             raise SafetyStop("Signal expired before order submission.")
     result = execute_instruction(payload, policy["risk_per_trade_pct"], policy["max_open_risk_pct"], policy["max_daily_loss_pct"], policy["daily_profit_target_enabled"], policy["daily_profit_target_pct"], max_single_risk_pct=2.0, before_send=guard, include_all_positions=True, strict_history=True)
-    return ("EXECUTED" if result.sent else "REJECTED"), f"{result.message}; ticket={result.ticket}; risk={result.planned_risk_pct:.3f}%; volume={result.volume}"
+    from .trade_events import SignalOutcome
+    return SignalOutcome("EXECUTED" if result.sent else "REJECTED", f"{result.message}; ticket={result.ticket}; risk={result.planned_risk_pct:.3f}%; volume={result.volume}", getattr(result, 'details', {}))
 
 
 def _runtime_alert(event_key, state, account, message):
@@ -105,7 +106,8 @@ def _runtime_alert(event_key, state, account, message):
         from .telegram_notifications import enqueue_owner_event
         from .client_notifications import record_system_event
         record_system_event('PERSONAL_'+state,f'{account}: {message}',event_key=event_key,database=personal_store.DB_PATH)
-        enqueue_owner_event(event_key, f"AZT PERSONAL {state}\nAccount: {account}\n{message}", database=personal_store.DB_PATH)
+        enqueue_owner_event(event_key, f"AZT PERSONAL {state}\nAccount: {account}\n{message}", database=personal_store.DB_PATH,
+                            event={'kind':'RUNTIME','account':account,'state':state,'message':message})
     except Exception as exc:
         logging.warning("Personal runtime alert could not be queued (%s)", type(exc).__name__)
 
@@ -131,9 +133,10 @@ def _capture_telemetry(key):
         clock.validate_tick(mt5.symbol_info_tick(symbol))
         result = ingest_snapshot(None, key, capture_mt5(mt5, clock_offset_seconds=clock.offset_seconds), database=personal_store.DB_PATH)
         from .client_notifications import enqueue_trade_event
-        for trade in result["new_open"] + result["new_closed"]:
+        for trade in result["new_open"] + result["new_closed"] + result.get('new_stop_updates', []):
             trade.update(account_key=key, currency=getattr(account, "currency", ""))
-            enqueue_trade_event(None, trade, event_key=f"personal-trade:{key}:{trade['state']}:{trade['ticket']}")
+            event_key=trade.get('event_key') or f"personal-trade:{key}:{trade['state']}:{trade['ticket']}"
+            enqueue_trade_event(None, trade, event_key=event_key, database=personal_store.DB_PATH)
     except Exception as exc:
         logging.warning("Personal read-only telemetry unavailable (%s); prior snapshot retained.", type(exc).__name__)
 
@@ -202,12 +205,15 @@ def run(stop):
             cursor = row["id"]
             if not claim_signal(key, row["signal_key"]):
                 continue
+            details = {}
             try:
-                state, message = execute_signal(row, settings, stop)
+                outcome = execute_signal(row, settings, stop)
+                state, message = outcome
+                details = getattr(outcome, 'details', {})
             except Exception as exc:
                 # An exception around submission can be ambiguous; never auto retry.
                 state, message = "ERROR_REVIEW", str(exc)
-            finish_signal(key, row["signal_key"], state, message)
+            finish_signal(key, row["signal_key"], state, message, details=details)
             if state == "EXECUTED":
                 try:
                     import re
@@ -217,7 +223,7 @@ def run(stop):
                     risk = re.search(r"risk=([0-9.]+)%", message)
                     if ticket:
                         record_execution(None, key, ticket.group(1), json.loads(row["payload"]),
-                                         risk_pct=float(risk.group(1)) if risk else None, database=personal_store.DB_PATH)
+                                         risk_pct=float(risk.group(1)) if risk else None, trade_details=details, database=personal_store.DB_PATH)
                 except Exception as exc:
                     logging.warning("Execution metadata unavailable (%s); trade result remains saved.", type(exc).__name__)
             last_result = f"{state}: {message}"

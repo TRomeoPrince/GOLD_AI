@@ -26,6 +26,10 @@ class TelegramRequestError(RuntimeError):
     """A safe, token-free error suitable for logs and service status."""
 
 
+class TelegramCommandError(ValueError):
+    """A bounded user-facing command usage message, never a raw system error."""
+
+
 def _api_error_summary(code: int) -> str:
     summaries = {
         401: "Telegram rejected the bot token (HTTP 401).",
@@ -101,21 +105,31 @@ class ClientTelegramBot:
         except Exception as exc:
             raise TelegramRequestError(_error_summary(exc)) from None
 
-    def send_message(self, chat_id: int, text: str) -> Optional[int]:
+    def send_message(self, chat_id: int, text: str, *, parse_mode: str | None = None) -> Optional[int]:
+        if parse_mode and len(str(text).encode('utf-16-le'))//2>4096:
+            raise TelegramRequestError('Formatted Telegram message exceeds the delivery limit; split it into pages.')
+        data={"chat_id": int(chat_id), "text": str(text)[:4096]}
+        if parse_mode:
+            data['parse_mode']=parse_mode
         result = self._api(
             "sendMessage",
-            {"chat_id": int(chat_id), "text": str(text)[:4096]},
+            data,
         )
         message = (result or {}).get("result", {})
         message_id = message.get("message_id")
-        return int(message_id) if message_id is not None else None
+        if not isinstance(message_id,int) or isinstance(message_id,bool) or message_id<=0:
+            raise TelegramRequestError('Telegram returned no message confirmation; delivery outcome is unknown.')
+        return message_id
 
-    def send_photo(self, chat_id: int, path, caption: str = '') -> Optional[int]:
+    def send_photo(self, chat_id: int, path, caption: str = '', *, parse_mode: str | None = None) -> Optional[int]:
         if not self.configured:
             raise TelegramRequestError('Telegram bot token is not configured.')
         boundary='AZT'+uuid.uuid4().hex
         fields=[]
-        for key,value in [('chat_id',str(int(chat_id))),('caption',str(caption)[:1024])]:
+        values=[('chat_id',str(int(chat_id))),('caption',str(caption)[:1024])]
+        if parse_mode:
+            values.append(('parse_mode',parse_mode))
+        for key,value in values:
             fields.append((f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n').encode('utf-8'))
         fields.append((f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="AZT_PnL.png"\r\nContent-Type: image/png\r\n\r\n').encode())
         fields.append(Path(path).read_bytes())
@@ -127,7 +141,7 @@ class ClientTelegramBot:
             if not isinstance(result,dict) or result.get('ok') is not True:
                 raise TelegramRequestError(_api_error_summary(result.get('error_code',0) if isinstance(result,dict) else 0))
             message_id=result.get('result',{}).get('message_id')
-            if not isinstance(message_id,int) or message_id<=0:
+            if not isinstance(message_id,int) or isinstance(message_id,bool) or message_id<=0:
                 raise TelegramRequestError('Telegram returned no photo confirmation; delivery outcome is unknown.')
             return message_id
         except TelegramRequestError:
@@ -141,8 +155,8 @@ class ClientTelegramBot:
             "/link PAIRING_CODE - link this Telegram to AZT\n"
             "/status - your AZT access status\n"
             "/subscription - subscription/renewal status\n"
-            "/positions - your observed open positions\n"
-            "/journal YYYY-MM-DD - daily journal card\n"
+            "/positions [page] - detailed open positions and card\n"
+            "/journal [YYYY-MM-DD] [page] - daily journal and card\n"
             "/pnl - today's PnL card\n"
             "/help - show commands"
         )
@@ -157,6 +171,8 @@ class ClientTelegramBot:
         parts = text.split()
         command = parts[0].split("@")[0].lower() if parts else ""
         photo = None
+        photo_caption = ''
+        rich_reply = False
         command_client_id = None
 
         try:
@@ -194,7 +210,8 @@ class ClientTelegramBot:
                     reply='Telegram is not linked yet. Use /link YOUR_PAIRING_CODE.'
                 else:
                     from .trade_telemetry import list_trades,daily_journal
-                    from .pnl_cards import render_trade_card,render_journal_card
+                    from .pnl_cards import render_positions_cards,render_journal_card
+                    from .telegram_presentation import format_positions,format_journal,POSITIONS_PER_PAGE
                     from .workspace_settings import load_settings
                     from .azt_store import preferences
                     scope=None if owner else client.id
@@ -202,22 +219,40 @@ class ClientTelegramBot:
                     tz=load_settings()['display_timezone'] if owner else preferences(client.id).get('display_timezone','UTC')
                     if command=='/positions':
                         positions=list_trades(scope,state='OPEN')
-                        from .trade_telemetry import display_time
-                        from datetime import datetime,timezone
-                        def position_line(p):
-                            observed=p.get('observed_utc')
-                            stale=not observed or (datetime.now(timezone.utc)-datetime.fromisoformat(observed)).total_seconds()>60
-                            return f"#{p.get('ticket','—')} {p.get('symbol','')} {p.get('direction','')} • {p.get('volume','—')} lots • {p.get('pnl',0)} {p.get('currency','')}\nSnapshot: {display_time(observed,tz)}"+(' • STALE' if stale else '')
-                        reply='AZT • Open positions\n'+('\n'.join(position_line(p) for p in positions[:15]) or 'No observed open positions. Data is supplied by enabled MT5 workers.')
-                        if len(positions)==1:
-                            photo=render_trade_card(positions[0],display_timezone=tz)
+                        if len(parts)>2:
+                            raise TelegramCommandError('Use: /positions [page number]')
+                        pages=format_positions(positions,display_timezone=tz)
+                        page=self._page_number(parts[1] if len(parts)>1 else '1',len(pages),'/positions')
+                        reply=pages[page-1]
+                        selected=positions[(page-1)*POSITIONS_PER_PAGE:page*POSITIONS_PER_PAGE]
+                        if selected:
+                            rendered=render_positions_cards(selected,display_timezone=tz)
+                            photo=rendered[0] if rendered else None
+                            photo_caption=f'AZT • Open positions • Page {page}/{len(pages)}\nFull position details and currency totals are in the message above.'
                     else:
                         from datetime import datetime
                         from zoneinfo import ZoneInfo
-                        date=parts[1] if len(parts)>1 and command=='/journal' else datetime.now(ZoneInfo(tz)).date().isoformat()
+                        arguments=parts[1:]
+                        date=datetime.now(ZoneInfo(tz)).date().isoformat()
+                        if arguments and '-' in arguments[0]:
+                            from datetime import date as date_type
+                            try:
+                                value=arguments.pop(0)
+                                if len(value)!=10:
+                                    raise ValueError
+                                date=date_type.fromisoformat(value).isoformat()
+                            except ValueError:
+                                raise TelegramCommandError('Use a valid local date: /journal YYYY-MM-DD [page number]') from None
+                        if len(arguments)>1:
+                            raise TelegramCommandError('Use: /journal [YYYY-MM-DD] [page number]')
                         journal=daily_journal(scope,date=date,timezone=tz)
-                        reply=f"AZT • Daily journal {date}\nDisplay timezone: {tz}\nTrades: {journal.get('trades_taken',journal.get('trade_count',0))} • Wins: {journal.get('wins',0)} • Losses: {journal.get('losses',0)}"
-                        photo=render_journal_card(journal,display_timezone=tz)
+                        pages=format_journal(journal,display_timezone=tz)
+                        page=self._page_number(arguments[0] if arguments else '1',len(pages),'/journal '+date)
+                        reply=pages[page-1]
+                        if page==1:
+                            photo=render_journal_card(journal,display_timezone=tz)
+                            photo_caption=f'AZT • Daily journal • {date} • {tz}\nThe complete summary and trade details are in the message above.'
+                    rich_reply=True
             elif command == "/subscription":
                 client = client_by_telegram_chat(chat_id)
                 if client is None:
@@ -241,13 +276,17 @@ class ClientTelegramBot:
 
         except Exception as exc:
             # Only the known user-facing validation message is safe to echo.
-            detail = "Invalid pairing code." if isinstance(exc, ValueError) and str(exc) == "Invalid pairing code." else "Please try again later."
+            detail = str(exc) if isinstance(exc,TelegramCommandError) else "Invalid pairing code." if isinstance(exc, ValueError) and str(exc) == "Invalid pairing code." else "Please try again later."
             reply = f"Could not complete that request: {detail}"
 
         # A failed reply must not replay a command that may already have changed
         # the database, or trigger a second fallback send with an uncertain result.
         try:
-            if photo:
+            if rich_reply:
+                self.send_message(chat_id, reply, parse_mode='HTML')
+                if photo:
+                    self.send_photo(chat_id,photo,photo_caption)
+            elif photo:
                 self.send_photo(chat_id, photo, reply)
             else:
                 self.send_message(chat_id, reply)
@@ -260,6 +299,16 @@ class ClientTelegramBot:
             raise TelegramRequestError(self._last_reply_error) from None
         self._last_reply_error = None
         self._record_command(command,'REPLIED',command_client_id)
+
+    @staticmethod
+    def _page_number(value, count, command):
+        try:
+            page=int(value)
+        except (ValueError,TypeError):
+            raise TelegramCommandError(f'Use: {command} [page number]') from None
+        if not 1 <= page <= count:
+            raise TelegramCommandError(f'Choose a page from 1 to {count}. Example: {command} 1')
+        return page
 
     def _record_command(self,command,state,client_id=None):
         from .client_notifications import record_command

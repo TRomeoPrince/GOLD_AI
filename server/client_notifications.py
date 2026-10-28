@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -37,6 +38,8 @@ def connection(database=None):
             CREATE TABLE IF NOT EXISTS azt_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,created_utc TEXT NOT NULL,read_utc TEXT NOT NULL DEFAULT '',event_key TEXT UNIQUE);
         ''')
+        if 'event_json' not in {r[1] for r in con.execute('PRAGMA table_info(azt_telegram_delivery)')}:
+            con.execute("ALTER TABLE azt_telegram_delivery ADD COLUMN event_json TEXT NOT NULL DEFAULT ''")
         yield con
         con.commit()
     except Exception:
@@ -54,7 +57,7 @@ def _fingerprint(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
 
-def enqueue_client_message(client_id,text,*,event_key=None,database=None,media_path=None):
+def enqueue_client_message(client_id,text,*,event_key=None,database=None,media_path=None,event=None):
     try:
         token=_token()
         if not token:
@@ -64,7 +67,7 @@ def enqueue_client_message(client_id,text,*,event_key=None,database=None,media_p
             if client is None or not client['telegram_chat_id'] or client['status'] in {'ARCHIVED','REVOKED'}:
                 return False
             key=event_key or uuid.uuid4().hex
-            return con.execute('INSERT OR IGNORE INTO azt_telegram_delivery(event_key,client_id,chat_id,token_fingerprint,message,media_path,created_utc,updated) VALUES(?,?,?,?,?,?,?,?)',(str(key),int(client_id),int(client['telegram_chat_id']),_fingerprint(token),str(text)[:4096],str(media_path or ''),datetime.now(timezone.utc).isoformat(),time.time())).rowcount==1
+            return con.execute('INSERT OR IGNORE INTO azt_telegram_delivery(event_key,client_id,chat_id,token_fingerprint,message,media_path,created_utc,updated,event_json) VALUES(?,?,?,?,?,?,?,?,?)',(str(key),int(client_id),int(client['telegram_chat_id']),_fingerprint(token),str(text)[:4096],str(media_path or ''),datetime.now(timezone.utc).isoformat(),time.time(),json.dumps(event,allow_nan=False) if event else '')).rowcount==1
     except Exception as exc:
         logging.warning('Client Telegram copy could not be queued (%s).',type(exc).__name__)
         return False
@@ -77,17 +80,14 @@ def enqueue_trade_event(client_id,trade,*,event_key=None,database=None):
         if client_id is not None:
             with connection(database) as con:
                 con.execute('INSERT OR IGNORE INTO azt_messages(client_id,title,body,created_utc,event_key) VALUES(?,?,?,?,?)',(client_id,'AZT Trade '+str(trade.get('state','Update')),text,datetime.now(timezone.utc).isoformat(),'inapp:'+str(event_key) if event_key else None))
-        from .pnl_cards import render_trade_card
-        from .workspace_settings import load_settings
-        timezone_name=load_settings()['display_timezone']
-        if client_id is not None:
-            from .azt_store import preferences
-            timezone_name=preferences(client_id).get('display_timezone','UTC')
-        card=render_trade_card(trade,display_timezone=timezone_name)
+        # Store data only. The separately reloadable Telegram workers own every
+        # visual/wording decision, so later style edits need no desktop rebuild.
+        kind='SL_UPDATED' if trade.get('state')=='SL_UPDATED' else 'NEW_TRADE' if trade.get('state')=='OPEN' else 'TRADE_CLOSED'
+        event={'kind':kind,'trade':dict(trade),'account':trade.get('account_key','')}
         if client_id is None:
             from .telegram_notifications import enqueue_owner_event
-            return enqueue_owner_event(event_key or uuid.uuid4().hex,text,database=database,media_path=card)
-        return enqueue_client_message(client_id,text,event_key=event_key,database=database,media_path=card)
+            return enqueue_owner_event(event_key or uuid.uuid4().hex,text,database=database,event=event)
+        return enqueue_client_message(client_id,text,event_key=event_key,database=database,event=event)
     except Exception as exc:
         logging.warning('Trade card alert could not be queued (%s).',type(exc).__name__)
         return False
@@ -129,7 +129,8 @@ def process_one(database=None):
     from .telegram_notifications import _safe_error
     try:
         bot=ClientTelegramBot(token=row['token'])
-        message_id=bot.send_photo(row['chat_id'],row['media_path'],row['message']) if row['media_path'] else bot.send_message(row['chat_id'],row['message'])
+        from .telegram_delivery import send_queued
+        message_id=send_queued(bot,row,database=database)
         if not isinstance(message_id,int) or message_id<=0:
             raise RuntimeError('Telegram returned no message confirmation.')
         with connection(database) as con:

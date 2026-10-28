@@ -7,6 +7,25 @@ import subprocess
 import socket
 import time
 from pathlib import Path
+from contextlib import contextmanager
+
+
+@contextmanager
+def external_runtime(external):
+    """Prevent frozen DLLs from leaking into the separate Python runtime."""
+    reset=external and os.name=='nt' and getattr(sys,'frozen',False)
+    if reset:
+        import ctypes
+        kernel=ctypes.WinDLL('kernel32',use_last_error=True)
+        kernel.SetDllDirectoryW.argtypes=[ctypes.c_wchar_p]
+        kernel.SetDllDirectoryW.restype=ctypes.c_int
+        if not kernel.SetDllDirectoryW(None):
+            raise OSError('Could not prepare external Telegram runtime.')
+    try:
+        yield
+    finally:
+        if reset:
+            kernel.SetDllDirectoryW(str(sys._MEIPASS))
 
 
 def configure():
@@ -108,13 +127,38 @@ class Services:
         self.root = root
         self.processes = {}
         self.errors = {}
+        self.lifecycle_lock = threading.RLock()
+        self.logs = root / "logs"
+        self.logs.mkdir(parents=True, exist_ok=True)
+        self.telegram_generation = self._telegram_generation()
         self.health = "API: checking | ngrok: checking"
         self.monitor_stop = threading.Event()
         threading.Thread(target=self.monitor, daemon=True).start()
-        self.logs = root / "logs"
-        self.logs.mkdir(parents=True, exist_ok=True)
+
+    def _telegram_generation(self):
+        import json
+        try:
+            data=json.loads((self.logs/'telegram_reload.json').read_text(encoding='utf-8'))
+            return str(data.get('generation','')) if isinstance(data,dict) else ''
+        except (OSError,ValueError):
+            return ''
+
+    def _reload_telegram(self):
+        generation=self._telegram_generation()
+        if not generation or generation==self.telegram_generation or self.monitor_stop.is_set():
+            return
+        self.telegram_generation=generation
+        with self.lifecycle_lock:
+            names=tuple(name for name in ('telegram','notifications','maintenance') if name in self.processes or name in self.errors)
+            self.stop_named(names)
+            if not self.monitor_stop.is_set():
+                self.start(names)
 
     def start(self, names=("api", "signal_engine", "telegram", "notifications", "maintenance"), extra_env=None):
+        with self.lifecycle_lock:
+            return self._start(names,extra_env)
+
+    def _start(self,names,extra_env=None):
         # Do not attach to or kill an independently launched API.
         api = self.processes.get("api")
         if "api" in names and (api is None or api.poll() is not None):
@@ -132,11 +176,26 @@ class Services:
                 self.errors[name] = "Not configured: set token in .env"
                 continue
             args = [sys.executable, "--service", name] if getattr(sys, "frozen", False) else [sys.executable, "-m", "server.admin_launcher", "--service", name]
+            external = name in {'telegram','notifications','maintenance'} and os.getenv('AZT_EXTERNAL_TELEGRAM','true').strip().lower() not in {'0','false','no','off'}
+            source_root=Path(os.getenv('AZT_TELEGRAM_SOURCE_ROOT',str(self.root))).resolve()
+            if external:
+                python=source_root/'.venv'/'Scripts'/'python.exe'
+                if not python.is_file():
+                    self.errors[name]='External Telegram runtime missing: install owner requirements into .venv, then retry.'
+                    continue
+                args=[str(python),'-m','server.admin_launcher','--service',name]
             try:
                 (self.logs / (name + "_status.json")).unlink(missing_ok=True)
                 with open(self.logs / (name + ".log"), "ab", buffering=0) as log:
                     log.write(b"\n=== service starting ===\n")
-                    self.processes[name] = subprocess.Popen(args, cwd=self.root, stdin=subprocess.PIPE, stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env={**os.environ, "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", **(extra_env or {})})
+                    module_root=source_root if external else Path(__file__).resolve().parents[1]
+                    env={**os.environ, "GOLD_AI_HOME":str(self.root), "PYTHONPATH":str(module_root), "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8", **(extra_env or {})}
+                    if external and getattr(sys,'frozen',False):
+                        bundle=str(Path(sys._MEIPASS).resolve()).casefold()
+                        env['PATH']=os.pathsep.join(p for p in env.get('PATH','').split(os.pathsep) if not str(Path(p).resolve()).casefold().startswith(bundle))
+                        env.pop('PYTHONHOME',None)
+                    with external_runtime(external):
+                        self.processes[name] = subprocess.Popen(args, cwd=source_root if external else self.root, stdin=subprocess.PIPE, stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=env)
                 self.errors.pop(name, None)
             except Exception as exc:
                 self.errors[name] = str(exc)
@@ -158,6 +217,7 @@ class Services:
                 except Exception:
                     values.append(label + ": unavailable")
             self.health = " | ".join(values)
+            self._reload_telegram()
             self.monitor_stop.wait(3)
 
     def detect_personal(self, terminal):
@@ -210,6 +270,10 @@ class Services:
         return self.health + " | Engine: " + self.runtime_status("signal_engine") + " | Personal: " + self.runtime_status("personal") + " | Telegram: " + self.runtime_status("telegram") + " | Owner alerts: " + self.runtime_status("notifications") + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.items()])
 
     def stop_named(self, names):
+        with self.lifecycle_lock:
+            return self._stop_named(names)
+
+    def _stop_named(self,names):
         processes = [p for name, p in self.processes.items() if name in names]
         for p in processes:
             if p.poll() is None:
@@ -261,6 +325,7 @@ def main():
             assert "signal_engine" not in services.processes
             assert "personal" not in services.processes
             phase = [0]
+            smoke_state = {}
             def smoke_actions():
                 if app.control_busy:
                     app.after(100, smoke_actions)
@@ -307,6 +372,14 @@ def main():
                     app.start_trading()
                     phase[0] = 3
                 elif phase[0] == 3 and services.runtime_status("signal_engine").startswith("SCANNING"):
+                    from server.telegram_admin import request_reload
+                    smoke_state.update(api=services.processes['api'],engine=process,maintenance=services.processes['maintenance'])
+                    request_reload(root)
+                    phase[0]=4
+                elif phase[0] == 4 and services.processes.get('maintenance') is not smoke_state['maintenance']:
+                    assert smoke_state['maintenance'].poll() is not None
+                    assert services.processes['api'] is smoke_state['api'] and smoke_state['api'].poll() is None
+                    assert services.processes['signal_engine'] is smoke_state['engine'] and smoke_state['engine'].poll() is None
                     app.close_app()
                     return
                 app.after(200, smoke_actions)

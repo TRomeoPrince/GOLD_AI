@@ -109,9 +109,9 @@ def _capture_hosted(client_id, key, clocks):
         result = ingest_snapshot(client_id, key, capture_mt5(mt5, clock_offset_seconds=clock.offset_seconds), database=DB_PATH)
         from .client_notifications import enqueue_trade_event
         account = mt5.account_info()
-        for row in result["new_open"] + result["new_closed"]:
+        for row in result["new_open"] + result["new_closed"] + result.get('new_stop_updates', []):
             row.update(account_key=key, currency=getattr(account, "currency", ""))
-            enqueue_trade_event(client_id, row, event_key=f"hosted-trade:{key}:{row['state']}:{row['ticket']}")
+            enqueue_trade_event(client_id, row, event_key=row.get('event_key') or f"hosted-trade:{key}:{row['state']}:{row['ticket']}", database=DB_PATH)
     except Exception as exc:
         logging.warning("Hosted read-only telemetry unavailable (%s); retaining prior snapshot.", type(exc).__name__)
 
@@ -263,7 +263,7 @@ def run(client_id: int, stop=None) -> None:
                         try:
                             from .trade_telemetry import record_execution
                             from .store import DB_PATH
-                            record_execution(client_id, key, result.ticket, payload, risk_pct=result.planned_risk_pct, database=DB_PATH)
+                            record_execution(client_id, key, result.ticket, payload, risk_pct=result.planned_risk_pct, trade_details=getattr(result,'details',{}), database=DB_PATH)
                         except Exception as exc:
                             logging.warning("Hosted execution metadata unavailable (%s).", type(exc).__name__)
             except Exception as exc:

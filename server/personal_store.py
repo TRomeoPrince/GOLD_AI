@@ -95,17 +95,23 @@ def claim_signal(account, key):
         return con.execute("INSERT OR IGNORE INTO personal_deliveries(account,signal_key,state,updated) VALUES(?,?,'SUBMITTING',?)", (account, key, time.time())).rowcount == 1
 
 
-def finish_signal(account, key, state, message):
+def finish_signal(account, key, state, message, *, details=None):
     with connection() as con:
         updated = con.execute("UPDATE personal_deliveries SET state=?,message=?,updated=? WHERE account=? AND signal_key=?", (state, message, time.time(), account, key)).rowcount
     if not updated:
         return False
     try:
         from .telegram_notifications import enqueue_owner_event
+        event={'kind':'RUNTIME','account':account,'state':state,'message':message}
+        event_key=f"personal-result:{account}:{key}"
+        if state == 'EXECUTED' and details and details.get('ticket'):
+            event={'kind':'NEW_TRADE','account':account,'trade':{**details,'account_key':account}}
+            event_key=f"personal-trade:{account}:OPEN:{details['ticket']}"
         enqueue_owner_event(
-            f"personal-result:{account}:{key}",
+            event_key,
             f"AZT PERSONAL {state}\nAccount: {account}\nSignal: {key}\n{message}",
             database=DB_PATH,
+            event=event,
         )
     except Exception as exc:
         logging.warning("Personal result saved but alert could not be queued (%s)", type(exc).__name__)

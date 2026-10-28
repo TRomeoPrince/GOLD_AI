@@ -1,6 +1,6 @@
 # AGORA ZION TRADER (AZT)
 
-The current Admin build is `dist_azt/AZT_Admin.exe`. See [AZT_RELEASE.md](AZT_RELEASE.md) for the updated Admin/Client features, migration details, verification results, setup and exact launch commands. The previous GOLD_AI environment names and stored data paths remain compatible.
+The current Admin build is `dist_telegram_style/AZT_Admin.exe`. See [TELEGRAM_UPDATE.md](TELEGRAM_UPDATE.md) for the Telegram presentation update and independent Telegram reload commands. [AZT_RELEASE.md](AZT_RELEASE.md) documents the underlying Admin/Client features and migration. The previous GOLD_AI environment names and stored data paths remain compatible.
 
 ## Research and legacy tooling
 
