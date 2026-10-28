@@ -4,7 +4,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-exe=Path(os.getenv('GOLD_AI_TEST_EXE','dist_personal/GOLD_AI_Admin.exe')).resolve()
+exe=Path(os.getenv('GOLD_AI_TEST_EXE','dist_azt/AZT_Admin.exe')).resolve()
 with tempfile.TemporaryDirectory(prefix='gold-personal-smoke-') as folder:
     root=Path(folder)
     (root/'server').mkdir()

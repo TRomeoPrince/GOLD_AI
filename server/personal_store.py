@@ -104,7 +104,7 @@ def finish_signal(account, key, state, message):
         from .telegram_notifications import enqueue_owner_event
         enqueue_owner_event(
             f"personal-result:{account}:{key}",
-            f"GOLD_AI PERSONAL {state}\nAccount: {account}\nSignal: {key}\n{message}",
+            f"AZT PERSONAL {state}\nAccount: {account}\nSignal: {key}\n{message}",
             database=DB_PATH,
         )
     except Exception as exc:

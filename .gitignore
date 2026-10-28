@@ -32,3 +32,7 @@ server/personal_account.json
 server/personal_account.tmp
 
 server/.personal_account.*.tmp
+server/workspace_settings.json
+server/.workspace_settings.*.tmp
+build/azt_pyi/
+dist_azt/

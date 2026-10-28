@@ -1,4 +1,8 @@
-# GOLD_AI
+# AGORA ZION TRADER (AZT)
+
+The current Admin build is `dist_azt/AZT_Admin.exe`. See [AZT_RELEASE.md](AZT_RELEASE.md) for the updated Admin/Client features, migration details, verification results, setup and exact launch commands. The previous GOLD_AI environment names and stored data paths remain compatible.
+
+## Research and legacy tooling
 
 Python-first XAUUSD multi-strategy scalping research system with nine independent M5 entry models.
 

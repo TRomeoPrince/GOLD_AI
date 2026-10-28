@@ -75,6 +75,8 @@ class TelegramAPITests(unittest.TestCase):
 
 class TelegramWorkerTests(unittest.TestCase):
     def setUp(self):
+        self.command_patch = patch.object(telegram.ClientTelegramBot, '_record_command')
+        self.command_patch.start()
         self.bot = telegram.ClientTelegramBot(token="test-secret-token")
         self.status_patch = patch.object(telegram, "write_status")
         self.status = self.status_patch.start()
@@ -82,6 +84,7 @@ class TelegramWorkerTests(unittest.TestCase):
         self.print = self.print_patch.start()
 
     def tearDown(self):
+        self.command_patch.stop()
         self.print_patch.stop()
         self.status_patch.stop()
 

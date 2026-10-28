@@ -6,6 +6,7 @@ from typing import Optional
 import MetaTrader5 as mt5
 import pandas as pd
 from .clock import BrokerClock
+from .symbols import resolve_symbol
 
 
 @dataclass(frozen=True)
@@ -45,25 +46,7 @@ class MT5Client:
         )
 
     def _resolve_symbol(self) -> str:
-        symbols = mt5.symbols_get()
-        if not symbols:
-            raise RuntimeError("MT5 returned no symbols.")
-
-        hint = self.symbol_hint.upper()
-        candidates = [s.name for s in symbols if hint in s.name.upper()]
-        if not candidates:
-            raise RuntimeError(f"No symbol containing {self.symbol_hint!r} was found.")
-
-        exact = [name for name in candidates if name.upper() == hint]
-        chosen = exact[0] if exact else sorted(candidates, key=len)[0]
-
-        info = mt5.symbol_info(chosen)
-        if info is None:
-            raise RuntimeError(f"Could not read symbol info for {chosen}.")
-        if not info.visible and not mt5.symbol_select(chosen, True):
-            raise RuntimeError(f"Could not select symbol {chosen} in Market Watch.")
-
-        return chosen
+        return resolve_symbol(mt5, self.symbol_hint)
 
     def account_snapshot(self) -> dict:
         account = mt5.account_info()

@@ -10,6 +10,8 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
+import uuid
 from typing import Any, Optional
 
 from .personal_store import write_status
@@ -66,7 +68,7 @@ def _status(state: str, message: str) -> None:
 class ClientTelegramBot:
     """Client-facing Telegram bot.
 
-    Clients may link their Telegram account and view their own GOLD_AI status.
+    Clients may link their Telegram account and view their own AZT status.
     Owner/runtime control commands are intentionally not exposed here.
     """
 
@@ -82,7 +84,7 @@ class ClientTelegramBot:
 
     def _api(self, method: str, data: Optional[dict] = None, timeout: int = 20) -> Any:
         if not self.configured:
-            raise TelegramRequestError("GOLD_AI client Telegram bot token is not configured.")
+            raise TelegramRequestError("AZT client Telegram bot token is not configured.")
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         payload = urllib.parse.urlencode(data or {}).encode()
         request = urllib.request.Request(url, data=payload, method="POST")
@@ -108,12 +110,40 @@ class ClientTelegramBot:
         message_id = message.get("message_id")
         return int(message_id) if message_id is not None else None
 
+    def send_photo(self, chat_id: int, path, caption: str = '') -> Optional[int]:
+        if not self.configured:
+            raise TelegramRequestError('Telegram bot token is not configured.')
+        boundary='AZT'+uuid.uuid4().hex
+        fields=[]
+        for key,value in [('chat_id',str(int(chat_id))),('caption',str(caption)[:1024])]:
+            fields.append((f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n').encode('utf-8'))
+        fields.append((f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="AZT_PnL.png"\r\nContent-Type: image/png\r\n\r\n').encode())
+        fields.append(Path(path).read_bytes())
+        fields.append(f'\r\n--{boundary}--\r\n'.encode())
+        request=urllib.request.Request(f'https://api.telegram.org/bot{self.token}/sendPhoto',data=b''.join(fields),headers={'Content-Type':'multipart/form-data; boundary='+boundary},method='POST')
+        try:
+            with urllib.request.urlopen(request,timeout=20) as response:
+                result=json.loads(response.read().decode('utf-8'))
+            if not isinstance(result,dict) or result.get('ok') is not True:
+                raise TelegramRequestError(_api_error_summary(result.get('error_code',0) if isinstance(result,dict) else 0))
+            message_id=result.get('result',{}).get('message_id')
+            if not isinstance(message_id,int) or message_id<=0:
+                raise TelegramRequestError('Telegram returned no photo confirmation; delivery outcome is unknown.')
+            return message_id
+        except TelegramRequestError:
+            raise
+        except Exception as exc:
+            raise TelegramRequestError(_error_summary(exc)) from None
+
     def _help(self) -> str:
         return (
-            "GOLD_AI Client Bot\n\n"
-            "/link PAIRING_CODE - link this Telegram to GOLD_AI\n"
-            "/status - your GOLD_AI access status\n"
+            "AGORA ZION TRADER • AZT\n\n"
+            "/link PAIRING_CODE - link this Telegram to AZT\n"
+            "/status - your AZT access status\n"
             "/subscription - subscription/renewal status\n"
+            "/positions - your observed open positions\n"
+            "/journal YYYY-MM-DD - daily journal card\n"
+            "/pnl - today's PnL card\n"
             "/help - show commands"
         )
 
@@ -126,6 +156,8 @@ class ClientTelegramBot:
 
         parts = text.split()
         command = parts[0].split("@")[0].lower() if parts else ""
+        photo = None
+        command_client_id = None
 
         try:
             if command in {"/start", "/help"}:
@@ -136,7 +168,7 @@ class ClientTelegramBot:
                 else:
                     client = link_telegram_chat(parts[1], chat_id, username)
                     reply = (
-                        f"✅ Telegram linked to GOLD_AI client: {client.name}\n"
+                        f"✅ Telegram linked to AZT client: {client.name}\n"
                         "You can now receive account and subscription notifications."
                     )
             elif command == "/status":
@@ -144,25 +176,65 @@ class ClientTelegramBot:
                 if client is None:
                     reply = "Telegram is not linked yet. Use /link YOUR_PAIRING_CODE."
                 else:
+                    from .azt_store import subscription_summary
+                    access=subscription_summary(client.id)
+                    command_client_id=client.id
                     reply = (
-                        f"GOLD_AI STATUS\n"
+                        f"AZT STATUS\n"
                         f"Client: {client.name}\n"
-                        f"Access: {client.status}\n"
+                        f"Access: {client.status} / {access['effective_status']}\n"
                         f"Execution: {client.execution_mode}\n"
                         f"MT5: {client.mt5_login or '-'} @ {client.mt5_server or '-'}"
                     )
+            elif command in {'/positions','/journal','/pnl'}:
+                client=client_by_telegram_chat(chat_id)
+                owner_id=os.getenv('GOLD_AI_OWNER_TELEGRAM_CHAT_ID',os.getenv('TELEGRAM_ADMIN_ID','')).strip()
+                owner=client is None and owner_id==str(chat_id)
+                if client is None and not owner:
+                    reply='Telegram is not linked yet. Use /link YOUR_PAIRING_CODE.'
+                else:
+                    from .trade_telemetry import list_trades,daily_journal
+                    from .pnl_cards import render_trade_card,render_journal_card
+                    from .workspace_settings import load_settings
+                    from .azt_store import preferences
+                    scope=None if owner else client.id
+                    command_client_id=scope
+                    tz=load_settings()['display_timezone'] if owner else preferences(client.id).get('display_timezone','UTC')
+                    if command=='/positions':
+                        positions=list_trades(scope,state='OPEN')
+                        from .trade_telemetry import display_time
+                        from datetime import datetime,timezone
+                        def position_line(p):
+                            observed=p.get('observed_utc')
+                            stale=not observed or (datetime.now(timezone.utc)-datetime.fromisoformat(observed)).total_seconds()>60
+                            return f"#{p.get('ticket','—')} {p.get('symbol','')} {p.get('direction','')} • {p.get('volume','—')} lots • {p.get('pnl',0)} {p.get('currency','')}\nSnapshot: {display_time(observed,tz)}"+(' • STALE' if stale else '')
+                        reply='AZT • Open positions\n'+('\n'.join(position_line(p) for p in positions[:15]) or 'No observed open positions. Data is supplied by enabled MT5 workers.')
+                        if len(positions)==1:
+                            photo=render_trade_card(positions[0],display_timezone=tz)
+                    else:
+                        from datetime import datetime
+                        from zoneinfo import ZoneInfo
+                        date=parts[1] if len(parts)>1 and command=='/journal' else datetime.now(ZoneInfo(tz)).date().isoformat()
+                        journal=daily_journal(scope,date=date,timezone=tz)
+                        reply=f"AZT • Daily journal {date}\nDisplay timezone: {tz}\nTrades: {journal.get('trades_taken',journal.get('trade_count',0))} • Wins: {journal.get('wins',0)} • Losses: {journal.get('losses',0)}"
+                        photo=render_journal_card(journal,display_timezone=tz)
             elif command == "/subscription":
                 client = client_by_telegram_chat(chat_id)
                 if client is None:
                     reply = "Telegram is not linked yet. Use /link YOUR_PAIRING_CODE."
                 else:
-                    sub = subscription_for_client(client.id)
+                    from .azt_store import subscription_summary,preferences
+                    from .trade_telemetry import display_time
+                    summary=subscription_summary(client.id)
+                    sub=summary['subscription']
+                    tz=preferences(client.id)['display_timezone']
+                    command_client_id=client.id
                     reply = (
-                        f"GOLD_AI SUBSCRIPTION\n"
+                        f"AZT SUBSCRIPTION\n"
                         f"Plan: {sub['plan_code']}\n"
-                        f"Status: {sub['status']}\n"
-                        f"Expires: {sub['expires_utc'] or 'Not set'}\n"
-                        "Use the GOLD_AI app/dashboard to renew."
+                        f"Status: {summary['effective_status']}\n"
+                        f"Expires: {display_time(sub['expires_utc'],tz)} ({tz})\n"
+                        "Use the AZT Payments page to renew."
                     )
             else:
                 reply = self._help()
@@ -175,14 +247,23 @@ class ClientTelegramBot:
         # A failed reply must not replay a command that may already have changed
         # the database, or trigger a second fallback send with an uncertain result.
         try:
-            self.send_message(chat_id, reply)
+            if photo:
+                self.send_photo(chat_id, photo, reply)
+            else:
+                self.send_message(chat_id, reply)
         except Exception as exc:
             summary = _error_summary(exc)
             if self.token:
                 summary = summary.replace(self.token, "[redacted]")
             self._last_reply_error = re.sub(r"https?://\S+", "[redacted URL]", summary)[:500]
+            self._record_command(command,'FAILED',command_client_id)
             raise TelegramRequestError(self._last_reply_error) from None
         self._last_reply_error = None
+        self._record_command(command,'REPLIED',command_client_id)
+
+    def _record_command(self,command,state,client_id=None):
+        from .client_notifications import record_command
+        record_command(command if command.startswith('/') else '(help)',state,client_id)
 
     def _report_connection(self) -> None:
         if self._last_reply_error:

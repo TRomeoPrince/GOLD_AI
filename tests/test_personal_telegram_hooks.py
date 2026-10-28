@@ -14,7 +14,7 @@ class PersonalAlertHookTests(unittest.TestCase):
                     with patch('server.telegram_notifications.enqueue_owner_event') as queue:
                         personal_store.finish_signal('account',key,state,'ticket=1' if state=='EXECUTED' else 'not executed')
                         queue.assert_called_once()
-                        self.assertIn('GOLD_AI PERSONAL '+state,queue.call_args.args[1])
+                        self.assertIn('AZT PERSONAL '+state,queue.call_args.args[1])
                         self.assertEqual(queue.call_args.kwargs['database'],Path(folder)/'test.db')
                         with personal_store.connection() as con:
                             self.assertEqual(con.execute('SELECT state FROM personal_deliveries WHERE signal_key=?',(key,)).fetchone()[0],state)
@@ -30,7 +30,7 @@ class PersonalAlertHookTests(unittest.TestCase):
             self.assertFalse(personal_store.finish_signal('account','missing','EXECUTED','ticket=1'))
             queue.assert_not_called()
     def test_runtime_alert_queue_failure_cannot_stop_worker(self):
-        with patch('server.telegram_notifications.enqueue_owner_event',side_effect=OSError('unavailable')),self.assertLogs(level='WARNING'):
+        with tempfile.TemporaryDirectory() as folder,patch.object(personal_store,'DB_PATH',Path(folder)/'test.db'),patch('server.telegram_notifications.enqueue_owner_event',side_effect=OSError('unavailable')),self.assertLogs(level='WARNING'):
             personal_worker._runtime_alert('key','READY','account','Waiting for signals')
 
 if __name__=='__main__':unittest.main()

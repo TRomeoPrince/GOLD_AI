@@ -38,6 +38,34 @@ def _resolve_db_path() -> Path:
 DB_PATH = _resolve_db_path()
 
 
+class _ManagedConnection(sqlite3.Connection):
+    """Commit/rollback and close when used by the store's with-blocks."""
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
+def _backup_before_azt_migration(con):
+    """Snapshot an existing legacy DB before the first AZT schema transaction."""
+    tables = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "clients" not in tables or "azt_plans" in tables:
+        return None
+    source = Path(DB_PATH).resolve()
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    target = source.with_name(f"{source.stem}.pre_azt_{stamp}_{secrets.token_hex(4)}.backup.db")
+    # Reserve a unique filename; never overwrite a previous recovery snapshot.
+    with target.open("xb"):
+        pass
+    backup = sqlite3.connect(target)
+    try:
+        con.backup(backup)
+    finally:
+        backup.close()
+    return target
+
+
 @dataclass
 class ClientRecord:
     id: int
@@ -58,11 +86,20 @@ class ClientRecord:
     daily_profit_target_enabled: int = 0
     daily_profit_target_pct: float = 3.0
     execution_mode: str = "CLIENT_PC"
+    archived_utc: str = ""
+    display_timezone: str = "UTC"
+    max_mt5_accounts: int = 0
 
 
 def connect() -> sqlite3.Connection:
-    con = sqlite3.connect(DB_PATH)
+    con = sqlite3.connect(DB_PATH, timeout=10, factory=_ManagedConnection)
     con.row_factory = sqlite3.Row
+    try:
+        _backup_before_azt_migration(con)
+    except Exception:
+        con.close()
+        raise
+    con.execute("BEGIN IMMEDIATE")
     con.execute(
         """
         CREATE TABLE IF NOT EXISTS clients (
@@ -223,6 +260,8 @@ def connect() -> sqlite3.Connection:
             "INSERT OR IGNORE INTO server_settings(key,value) VALUES(?,?)",
             (key, value),
         )
+    from .azt_store import migrate
+    migrate(con)
     con.commit()
     return con
 
@@ -240,12 +279,14 @@ def create_client(name: str) -> tuple[ClientRecord, str]:
             (name.strip(), "ACTIVE", code, now),
         )
         row = con.execute("SELECT * FROM clients WHERE id=?", (cur.lastrowid,)).fetchone()
+        from .azt_store import _ensure_subscription
+        _ensure_subscription(con, int(cur.lastrowid))
     return _client(row), code
 
 
 def list_clients() -> list[ClientRecord]:
     with connect() as con:
-        rows = con.execute("SELECT * FROM clients ORDER BY id").fetchall()
+        rows = con.execute("SELECT * FROM clients WHERE archived_utc='' ORDER BY id").fetchall()
     return [_client(row) for row in rows]
 
 
@@ -254,7 +295,7 @@ def set_status(name: str, status: str) -> None:
     if status not in {"ACTIVE", "PAUSED", "REVOKED", "EXPIRED"}:
         raise ValueError("Status must be ACTIVE, PAUSED, REVOKED or EXPIRED.")
     with connect() as con:
-        cur = con.execute("UPDATE clients SET status=? WHERE name=?", (status, name))
+        cur = con.execute("UPDATE clients SET status=? WHERE name=? AND archived_utc=''", (status, name))
         if cur.rowcount == 0:
             raise ValueError(f"Unknown client: {name}")
 
@@ -423,7 +464,7 @@ def effective_risk_policy(client: ClientRecord) -> dict:
 def find_by_pairing_code(pairing_code: str) -> ClientRecord | None:
     with connect() as con:
         row = con.execute(
-            "SELECT * FROM clients WHERE pairing_code=?",
+            "SELECT * FROM clients WHERE pairing_code=? AND archived_utc=''",
             (pairing_code.strip(),),
         ).fetchone()
     return _client(row)
@@ -448,13 +489,17 @@ def bind_client(
     return _client(row)
 
 
-def create_session(client_id: int) -> str:
+def create_session(client_id: int, account_id: int | None = None) -> str:
     token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc).isoformat()
     with connect() as con:
+        if not con.execute("SELECT 1 FROM clients WHERE id=? AND archived_utc=''", (client_id,)).fetchone():
+            raise ValueError("Client not found or archived.")
+        if account_id is not None and not con.execute("SELECT 1 FROM client_mt5_accounts WHERE id=? AND client_id=? AND status='ACTIVE'", (account_id, client_id)).fetchone():
+            raise ValueError("MT5 account is not authorized for this client.")
         con.execute(
-            "INSERT INTO sessions(token,client_id,created_utc) VALUES(?,?,?)",
-            (token, client_id, now),
+            "INSERT INTO sessions(token,client_id,created_utc,account_id) VALUES(?,?,?,?)",
+            (token, client_id, now, account_id),
         )
     return token
 
@@ -465,7 +510,7 @@ def client_for_token(token: str) -> ClientRecord | None:
             """
             SELECT c.* FROM sessions s
             JOIN clients c ON c.id=s.client_id
-            WHERE s.token=?
+            WHERE s.token=? AND c.archived_utc=''
             """,
             (token,),
         ).fetchone()
@@ -475,9 +520,9 @@ def client_for_token(token: str) -> ClientRecord | None:
 def active_clients() -> list[ClientRecord]:
     with connect() as con:
         rows = con.execute(
-            "SELECT * FROM clients WHERE status='ACTIVE' ORDER BY id"
+            "SELECT * FROM clients WHERE status='ACTIVE' AND archived_utc='' ORDER BY id"
         ).fetchall()
-    return [_client(row) for row in rows]
+    return [_client(row) for row in rows if subscription_access(int(row["id"]))["allowed"]]
 
 
 def enqueue_instruction(client_id: int, signal_key: str, payload_json: str, legacy_key: str | None = None) -> bool:
@@ -528,7 +573,7 @@ def acknowledge_instruction(client_id: int, instruction_id: int, status: str, me
 
 def client_by_name(name: str) -> ClientRecord | None:
     with connect() as con:
-        row = con.execute("SELECT * FROM clients WHERE name=?", (name.strip(),)).fetchone()
+        row = con.execute("SELECT * FROM clients WHERE name=? AND archived_utc=''", (name.strip(),)).fetchone()
     return _client(row)
 
 
@@ -559,6 +604,8 @@ def upsert_hosted_account(client_id: int, mt5_login: int, mt5_server: str, tradi
         raise ValueError("MT5 server is required.")
     if not trading_password:
         raise ValueError("MT5 trading password is required.")
+    from .azt_store import authorize_account
+    authorize_account(int(client_id), mt5_login, mt5_server)
 
     ciphertext = encrypt_secret(trading_password)
     now = datetime.now(timezone.utc).isoformat()
@@ -654,7 +701,7 @@ def set_hosted_account_status(client_id: int, status: str) -> None:
 def client_by_id(client_id: int) -> ClientRecord | None:
     with connect() as con:
         row = con.execute(
-            "SELECT * FROM clients WHERE id=?",
+            "SELECT * FROM clients WHERE id=? AND archived_utc=''",
             (int(client_id),),
         ).fetchone()
     return _client(row)
@@ -745,29 +792,16 @@ def link_telegram_chat(pairing_code: str, telegram_chat_id: int, telegram_userna
 def client_by_telegram_chat(telegram_chat_id: int) -> ClientRecord | None:
     with connect() as con:
         row = con.execute(
-            "SELECT * FROM clients WHERE telegram_chat_id=?",
+            "SELECT * FROM clients WHERE telegram_chat_id=? AND archived_utc=''",
             (int(telegram_chat_id),),
         ).fetchone()
     return _client(row)
 
 
 def ensure_subscription(client_id: int) -> dict:
-    now = datetime.now(timezone.utc).isoformat()
-    with connect() as con:
-        con.execute(
-            """
-            INSERT OR IGNORE INTO subscriptions(
-                client_id, plan_code, status, starts_utc, expires_utc, auto_renew, updated_utc
-            )
-            VALUES(?, 'STARTER', 'TRIAL', '', '', 0, ?)
-            """,
-            (int(client_id), now),
-        )
-        row = con.execute(
-            "SELECT * FROM subscriptions WHERE client_id=?",
-            (int(client_id),),
-        ).fetchone()
-    return dict(row)
+    from .azt_store import _db, _ensure_subscription
+    with _db() as con:
+        return _ensure_subscription(con, int(client_id))
 
 
 def set_subscription(
@@ -781,8 +815,14 @@ def set_subscription(
 ) -> dict:
     plan_code = plan_code.upper().strip()
     status = status.upper().strip()
-    if status not in {"TRIAL", "ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED"}:
+    if status not in {"TRIAL", "ACTIVE", "PAST_DUE", "EXPIRED", "CANCELLED", "PAUSED", "REVOKED", "EXPIRING SOON"}:
         raise ValueError("Invalid subscription status.")
+    from .azt_store import utc_iso
+    starts_utc = utc_iso(starts_utc) if starts_utc else datetime.now(timezone.utc).isoformat()
+    if expires_utc:
+        expires_utc = utc_iso(expires_utc)
+    elif status == "ACTIVE":
+        raise ValueError("Set an explicit expiry for active paid access.")
     now = datetime.now(timezone.utc).isoformat()
     with connect() as con:
         con.execute(
@@ -809,6 +849,8 @@ def set_subscription(
                 now,
             ),
         )
+        plan = con.execute("SELECT max_mt5_accounts FROM azt_plans WHERE code=?", (plan_code,)).fetchone()
+        con.execute("UPDATE subscriptions SET access_kind=?,max_mt5_accounts=? WHERE client_id=?", ("TRIAL" if status == "TRIAL" else "PAID", int(plan[0]) if plan else 1, int(client_id)))
         row = con.execute(
             "SELECT * FROM subscriptions WHERE client_id=?",
             (int(client_id),),
@@ -821,40 +863,8 @@ def subscription_for_client(client_id: int) -> dict:
 
 
 def subscription_access(client_id: int) -> dict:
-    sub = subscription_for_client(client_id)
-    status = str(sub.get("status", "TRIAL") or "TRIAL").upper()
-    expires_raw = str(sub.get("expires_utc", "") or "").strip()
-
-    if status in {"PAST_DUE", "EXPIRED", "CANCELLED"}:
-        return {
-            "allowed": False,
-            "reason": f"SUBSCRIPTION_{status}",
-            "subscription": sub,
-        }
-
-    if expires_raw:
-        try:
-            expires = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
-            if expires.tzinfo is None:
-                expires = expires.replace(tzinfo=timezone.utc)
-            if datetime.now(timezone.utc) >= expires.astimezone(timezone.utc):
-                return {
-                    "allowed": False,
-                    "reason": "SUBSCRIPTION_EXPIRED",
-                    "subscription": sub,
-                }
-        except ValueError:
-            return {
-                "allowed": False,
-                "reason": "SUBSCRIPTION_EXPIRY_INVALID",
-                "subscription": sub,
-            }
-
-    return {
-        "allowed": True,
-        "reason": "OK",
-        "subscription": sub,
-    }
+    from .azt_store import subscription_summary
+    return subscription_summary(client_id)
 
 
 def create_payment_request(

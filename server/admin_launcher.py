@@ -84,6 +84,12 @@ def worker(name):
     elif name == "notifications":
         from server.telegram_notifications import run
         run(stop)
+    elif name == 'maintenance':
+        from server.client_notifications import run_maintenance
+        run_maintenance(stop)
+    elif name.startswith('hosted_') and name[7:].isdigit():
+        from server.hosted_worker import run
+        run(int(name[7:]), stop)
     elif name == "telegram":
         from server.client_telegram import ClientTelegramBot
         bot = ClientTelegramBot()
@@ -108,7 +114,7 @@ class Services:
         self.logs = root / "logs"
         self.logs.mkdir(parents=True, exist_ok=True)
 
-    def start(self, names=("api", "signal_engine", "telegram", "notifications"), extra_env=None):
+    def start(self, names=("api", "signal_engine", "telegram", "notifications", "maintenance"), extra_env=None):
         # Do not attach to or kill an independently launched API.
         api = self.processes.get("api")
         if "api" in names and (api is None or api.poll() is not None):
@@ -244,13 +250,13 @@ def main():
         msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError:
         from tkinter import messagebox
-        messagebox.showinfo("GOLD_AI", "GOLD_AI Admin is already running.")
+        messagebox.showinfo("AZT", "AGORA ZION TRADER Admin is already running.")
         return
     services = Services(root)
     try:
         from server.admin_gui import GoldAIAdmin
         app = GoldAIAdmin(services)
-        services.start(("api", "telegram", "notifications"))
+        services.start(("api", "telegram", "notifications", "maintenance") if '--smoke-test' in sys.argv else ("api", "signal_engine", "telegram", "notifications", "maintenance"))
         if "--smoke-test" in sys.argv:
             assert "signal_engine" not in services.processes
             assert "personal" not in services.processes
@@ -261,6 +267,18 @@ def main():
                     return
                 process = services.processes.get("signal_engine")
                 if phase[0] == 0:
+                    # All workspace pages must remain navigable at common laptop
+                    # sizes. Controls wrap inside scrollable pages; footer stays.
+                    app.state('normal')
+                    for size in ('1024x768','1280x800','1366x768','1440x900'):
+                        app.geometry(size)
+                        app.update_idletasks()
+                        for page in ('Dashboard','Clients','Trades','Journal','Telegram','Risk','Settings'):
+                            app.show_page(page)
+                            app.update_idletasks()
+                            assert app.pages[page].winfo_width()>500
+                        assert app.status_label.winfo_rooty()+app.status_label.winfo_height() <= app.winfo_rooty()+app.winfo_height()
+                    app.show_page('Dashboard')
                     # Exercise this controller from the packaged script entry point,
                     # where relative imports have no package context. Never spawn
                     # a personal worker or use real settings in this regression check.

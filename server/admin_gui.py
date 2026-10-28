@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from server.admin_workspace import AdminWorkspace
 
 from server.client_telegram import send_client_message
 from server.hosted_manager import provision_instance, start_worker, stop_worker, worker_log_path
@@ -23,13 +24,17 @@ from server.store import (
 )
 
 
-class GoldAIAdmin(tk.Tk):
+class GoldAIAdmin(AdminWorkspace, tk.Tk):
     def __init__(self, services=None):
         super().__init__()
-        self.title("GOLD_AI Admin • Risk, Clients & Subscriptions")
-        self.geometry("1180x760")
-        self.minsize(1080, 680)
+        self.title("AGORA ZION TRADER • AZT Admin")
+        self.geometry("1280x800")
+        self.minsize(min(1000,self.winfo_screenwidth()-70),min(690,self.winfo_screenheight()-100))
+        self.after_idle(lambda: self.state('zoomed'))
         self.services = services
+        if services is not None:
+            from server.hosted_manager import configure_supervisor
+            configure_supervisor(services)
         self.control_busy = False
         self.closing = False
         self.selected_name = ""
@@ -173,15 +178,15 @@ class GoldAIAdmin(tk.Tk):
         from server.ngrok_start import start_ngrok
         self.run_control(lambda: start_ngrok(self.services.logs, self.services.port))
 
-    def update_services(self):
+    def update_services_legacy(self):
         if self.services:
             self.service_status.set(self.services.status())
         self.after(1000, self.update_services)
 
-    def _build(self):
+    def _build_legacy(self):
         top = ttk.Frame(self, padding=14)
         top.pack(fill="x")
-        ttk.Label(top, text="GOLD_AI ADMIN", font=("Segoe UI", 20, "bold")).pack(side="left")
+        ttk.Label(top, text="AZT ADMIN", font=("Segoe UI", 20, "bold")).pack(side="left")
         self.news_var = tk.BooleanVar(value=news_lock_enabled())
         ttk.Checkbutton(
             top,
@@ -289,7 +294,7 @@ class GoldAIAdmin(tk.Tk):
         self.status = tk.StringVar(value="Ready.")
         ttk.Label(body, textvariable=self.status).pack(anchor="w", pady=(10,0))
 
-    def refresh(self):
+    def refresh_legacy(self):
         current = self.selected_name
         for item in self.tree.get_children():
             self.tree.delete(item)
@@ -348,22 +353,22 @@ class GoldAIAdmin(tk.Tk):
             messagebox.showinfo("Client Created", f"Client: {client.name}\nPairing code: {code}\n\nCode copied.")
             self.refresh()
         except Exception as exc:
-            messagebox.showerror("GOLD_AI Admin", str(exc))
+            messagebox.showerror("AZT Admin", str(exc))
 
     def change_status(self, status):
         if not self.selected_name:
-            messagebox.showwarning("GOLD_AI Admin", "Select a client first.")
+            messagebox.showwarning("AZT Admin", "Select a client first.")
             return
         try:
             set_status(self.selected_name, status)
             self.status.set(f"{self.selected_name} → {status}")
             self.refresh()
         except Exception as exc:
-            messagebox.showerror("GOLD_AI Admin", str(exc))
+            messagebox.showerror("AZT Admin", str(exc))
 
     def use_pc_mode(self):
         if not self.selected_name:
-            messagebox.showwarning("GOLD_AI Admin", "Select a client first.")
+            messagebox.showwarning("AZT Admin", "Select a client first.")
             return
         for c in list_clients():
             if c.name == self.selected_name:
@@ -372,12 +377,12 @@ class GoldAIAdmin(tk.Tk):
                     self.status.set(f"{c.name} execution mode → CLIENT_PC")
                     self.refresh()
                 except Exception as exc:
-                    messagebox.showerror("GOLD_AI Admin", str(exc))
+                    messagebox.showerror("AZT Admin", str(exc))
                 return
 
     def copy_pairing(self):
         if not self.selected_name:
-            messagebox.showwarning("GOLD_AI Admin", "Select a client first.")
+            messagebox.showwarning("AZT Admin", "Select a client first.")
             return
         for c in list_clients():
             if c.name == self.selected_name:
@@ -388,7 +393,7 @@ class GoldAIAdmin(tk.Tk):
 
     def save_risk(self):
         if not self.selected_name:
-            messagebox.showwarning("GOLD_AI Admin", "Select a client first.")
+            messagebox.showwarning("AZT Admin", "Select a client first.")
             return
         try:
             set_client_risk(
@@ -409,15 +414,15 @@ class GoldAIAdmin(tk.Tk):
 
     def _selected_client_record(self):
         if not self.selected_name:
-            messagebox.showwarning("GOLD_AI Admin", "Select a client first.")
+            messagebox.showwarning("AZT Admin", "Select a client first.")
             return None
         for client in list_clients():
             if client.name == self.selected_name:
                 return client
-        messagebox.showwarning("GOLD_AI Admin", "Selected client no longer exists.")
+        messagebox.showwarning("AZT Admin", "Selected client no longer exists.")
         return None
 
-    def message_client(self):
+    def message_client_legacy(self):
         client = self._selected_client_record()
         if client is None:
             return
@@ -441,7 +446,7 @@ class GoldAIAdmin(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Client Messaging", str(exc))
 
-    def manage_subscription(self):
+    def manage_subscription_legacy(self):
         client = self._selected_client_record()
         if client is None:
             return
@@ -524,7 +529,7 @@ class GoldAIAdmin(tk.Tk):
         policy = get_global_risk_policy()
 
         window = tk.Toplevel(self)
-        window.title("GOLD_AI Global Risk Control")
+        window.title("AZT Global Risk Control")
         window.geometry("620x430")
         window.resizable(False, False)
 
@@ -540,7 +545,7 @@ class GoldAIAdmin(tk.Tk):
             frame,
             text=(
                 "These limits apply across all clients. A client's enabled custom value "
-                "can only make the policy stricter, never exceed the hard GOLD_AI ceiling."
+                "can only make the policy stricter, never exceed the hard AZT ceiling."
             ),
             wraplength=560,
         ).pack(anchor="w", pady=(4,14))
@@ -585,7 +590,7 @@ class GoldAIAdmin(tk.Tk):
                 )
                 self.status.set("Global risk policy saved.")
                 messagebox.showinfo(
-                    "GOLD_AI Risk Control",
+                    "AZT Risk Control",
                     "Global owner risk policy saved.",
                     parent=window,
                 )
@@ -598,16 +603,20 @@ class GoldAIAdmin(tk.Tk):
         ttk.Button(buttons, text="Close", command=window.destroy).pack(side="right")
 
     def show_hosted_requests(self):
+        from server import ui_theme as ui
         window = tk.Toplevel(self)
         window.title("Hosted MT5 Manager")
-        window.geometry("1180x520")
-        window.minsize(980, 430)
+        window.geometry(f"{min(1120,self.winfo_screenwidth()-80)}x{min(650,self.winfo_screenheight()-100)}")
+        window.minsize(650, 400)
+        window.rowconfigure(0,weight=1)
+        window.columnconfigure(0,weight=1)
+        table_area=ttk.Frame(window,padding=12)
+        table_area.grid(row=0,column=0,sticky='nsew')
 
         cols = (
             "client", "login", "server", "status", "pid",
             "balance", "equity", "seen", "error",
         )
-        tree = ttk.Treeview(window, columns=cols, show="headings")
         headings = {
             "client": "Client",
             "login": "MT5 Login",
@@ -630,10 +639,7 @@ class GoldAIAdmin(tk.Tk):
             "seen": 180,
             "error": 250,
         }
-        for col in cols:
-            tree.heading(col, text=headings[col])
-            tree.column(col, width=widths[col], anchor="center")
-        tree.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        tree=ui.make_table(table_area,[(col,headings[col],widths[col]) for col in cols],height=8)
 
         item_to_client_id = {}
         selected_client_id_value = {"id": None}
@@ -815,54 +821,22 @@ class GoldAIAdmin(tk.Tk):
 
         window.after(2000, auto_refresh)
 
-        actions = ttk.Frame(window, padding=(12, 4, 12, 6))
-        actions.pack(fill="x")
-        ttk.Button(
-            actions,
-            text="1. Approve",
-            command=lambda: change_hosted_status("APPROVED"),
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            actions,
-            text="2. Provision + Start",
-            command=provision_and_start,
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            actions,
-            text="Start",
-            command=start_selected,
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            actions,
-            text="Restart",
-            command=restart_selected,
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            actions,
-            text="Stop",
-            command=stop_selected,
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            actions,
-            text="Open Log",
-            command=open_log,
-        ).pack(side="left", padx=4)
-        ttk.Button(
-            actions,
-            text="Reject / Disable",
-            command=lambda: change_hosted_status("DISABLED"),
-        ).pack(side="left", padx=(18, 4))
-        ttk.Button(actions, text="Refresh", command=load_rows).pack(side="right", padx=4)
-        ttk.Button(actions, text="Close", command=window.destroy).pack(side="right", padx=4)
+        actions=ui.FlowBar(window)
+        actions.grid(row=1,column=0,sticky='ew',padx=12,pady=8)
+        for label,callback in [('1. Approve',lambda:change_hosted_status('APPROVED')),('2. Provision + Start',provision_and_start),('Start',start_selected),('Restart',restart_selected),('Stop',stop_selected),('Open Log',open_log),('Reject / Disable',lambda:change_hosted_status('DISABLED')),('Refresh',load_rows),('Close',window.destroy)]:
+            actions.add(label,callback)
 
-        ttk.Label(
+        help_label=ttk.Label(
             window,
             padding=(12, 0, 12, 12),
             text=(
                 "Flow: APPROVE → PROVISION + START → ACTIVE. "
                 "Passwords remain encrypted and are decrypted only inside the local hosted worker."
             ),
-        ).pack(anchor="w")
+            wraplength=700,
+        )
+        help_label.grid(row=2,column=0,sticky='ew')
+        window.bind('<Configure>',lambda e:help_label.configure(wraplength=max(280,window.winfo_width()-30)),add='+')
 
     def toggle_news_lock(self):
         set_news_lock(bool(self.news_var.get()))

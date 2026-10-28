@@ -10,7 +10,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-exe=Path(os.getenv('GOLD_AI_TEST_EXE', 'dist/GOLD_AI_Admin.exe')).resolve()
+exe=Path(os.getenv('GOLD_AI_TEST_EXE', 'dist_azt/AZT_Admin.exe')).resolve()
 command=[sys.executable,'-m','server.admin_launcher'] if '--source' in sys.argv else [str(exe)]
 with tempfile.TemporaryDirectory(prefix='gold-admin-smoke-') as folder:
     root=Path(folder)
@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory(prefix='gold-admin-smoke-') as folder:
     env={**os.environ,'PYTHONPATH':str(Path.cwd()),'GOLD_AI_HOME':folder,'GOLD_AI_API_PORT':str(port),
          'GOLD_AI_DB_PATH':str(root/'server/test.db'),'GOLD_AI_STATE_DIR':str(root/'server'),
          'GOLD_AI_CLIENT_TELEGRAM_BOT_TOKEN':'','GOLD_AI_MARKETS':'',
-         'GOLD_AI_PROJECT_ROOT':folder,'GOLD_AI_OWNER_TELEGRAM_ENABLED':'false','GOLD_AI_TEST_DIAGNOSTICS':'1'}
+         'GOLD_AI_PROJECT_ROOT':folder,'GOLD_AI_OWNER_TELEGRAM_ENABLED':'false','GOLD_AI_TEST_DIAGNOSTICS':'0'}
     subprocess.run([sys.executable, '-c', "from server.store import create_client,set_client_risk,set_subscription; c,_=create_client('Smoke Client'); set_client_risk(c.name,0.5,20,4); set_subscription(c.id,plan_code='STARTER',status='ACTIVE',starts_utc='2026-01-01T00:00:00+00:00',expires_utc='2099-01-01T00:00:00+00:00')"], env=env,check=True)
     def snapshot():
         with sqlite3.connect(root/'server/test.db') as con:

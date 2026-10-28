@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import floor
-from datetime import datetime
+from math import floor, isfinite
+from datetime import datetime, timezone
 import time
 
 import MetaTrader5 as mt5
 from broker.clock import tick_utc_epoch
+from broker.symbols import resolve_symbol
 
 MAGIC = 560090
 
@@ -22,24 +23,7 @@ class ExecutionResult:
 
 
 def _resolve_symbol(hint: str) -> str:
-    symbols = mt5.symbols_get() or ()
-    upper = hint.upper()
-    candidates = [s.name for s in symbols if upper in s.name.upper()]
-    if not candidates and upper in {"GOLD", "XAUUSD"}:
-        candidates = [
-            s.name for s in symbols
-            if "XAU" in s.name.upper() or "GOLD" in s.name.upper()
-        ]
-    if not candidates:
-        raise RuntimeError(f"No broker symbol found for {hint}.")
-    exact = [x for x in candidates if x.upper() == upper]
-    symbol = exact[0] if exact else sorted(candidates, key=len)[0]
-    info = mt5.symbol_info(symbol)
-    if info is None:
-        raise RuntimeError(f"Symbol info unavailable for {symbol}.")
-    if not info.visible and not mt5.symbol_select(symbol, True):
-        raise RuntimeError(f"Could not select {symbol}.")
-    return symbol
+    return resolve_symbol(mt5, hint)
 
 
 def _loss(direction: str, symbol: str, volume: float, entry: float, sl: float) -> float:
@@ -47,6 +31,8 @@ def _loss(direction: str, symbol: str, volume: float, entry: float, sl: float) -
     pnl = mt5.order_calc_profit(order_type, symbol, volume, entry, sl)
     if pnl is None:
         raise RuntimeError(f"Risk calculation failed: {mt5.last_error()}")
+    if not isfinite(float(pnl)):
+        raise RuntimeError("Risk calculation returned a non-finite value; order blocked.")
     return abs(min(float(pnl), 0.0))
 
 
@@ -64,6 +50,8 @@ def _volume_for_risk(
         raise RuntimeError("Account/symbol info unavailable.")
 
     equity = float(account.equity)
+    if not isfinite(equity) or equity <= 0:
+        raise RuntimeError("Account equity is invalid; order blocked.")
     target_cash = equity * target_risk_pct / 100.0
     loss_one = _loss(direction, symbol, 1.0, entry, sl)
     if loss_one <= 0:
@@ -88,11 +76,14 @@ def _volume_for_risk(
 
 def _open_risk_pct(include_all_positions=False) -> float:
     account = mt5.account_info()
-    if account is None or float(account.equity) <= 0:
+    if account is None or not isfinite(float(account.equity)) or float(account.equity) <= 0:
         return float("inf")
     equity = float(account.equity)
+    positions = mt5.positions_get()
+    if positions is None:
+        return float("inf")  # Query failure is not an empty portfolio.
     total = 0.0
-    for p in mt5.positions_get() or ():
+    for p in positions:
         if not include_all_positions and int(getattr(p, "magic", -1)) != MAGIC:
             continue
         sl = float(getattr(p, "sl", 0.0) or 0.0)
@@ -109,6 +100,8 @@ def _open_risk_pct(include_all_positions=False) -> float:
         )
         if pnl is None:
             return float("inf")
+        if not isfinite(float(pnl)):
+            return float("inf")
         total += abs(min(float(pnl), 0.0))
     return 100.0 * total / equity
 
@@ -118,7 +111,7 @@ def _daily_profit_pct(strict=False) -> float:
     if account is None:
         return 0.0
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     deals = mt5.history_deals_get(start, now)
     if strict and deals is None:
@@ -127,6 +120,8 @@ def _daily_profit_pct(strict=False) -> float:
 
     realized = 0.0
     for d in deals:
+        if not all(isfinite(float(getattr(d, field, 0) or 0)) for field in ("profit", "commission", "swap", "fee")):
+            raise RuntimeError("Daily MT5 history contains invalid values; order blocked.")
         realized += float(getattr(d, "profit", 0.0) or 0.0)
         realized += float(getattr(d, "commission", 0.0) or 0.0)
         realized += float(getattr(d, "swap", 0.0) or 0.0)
@@ -145,7 +140,7 @@ def _daily_loss_pct(strict=False) -> float:
     if account is None:
         return float("inf")
 
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     deals = mt5.history_deals_get(start, now)
     if strict and deals is None:
@@ -154,6 +149,8 @@ def _daily_loss_pct(strict=False) -> float:
 
     realized = 0.0
     for d in deals:
+        if not all(isfinite(float(getattr(d, field, 0) or 0)) for field in ("profit", "commission", "swap", "fee")):
+            raise RuntimeError("Daily MT5 history contains invalid values; order blocked.")
         realized += float(getattr(d, "profit", 0.0) or 0.0)
         realized += float(getattr(d, "commission", 0.0) or 0.0)
         realized += float(getattr(d, "swap", 0.0) or 0.0)
@@ -184,6 +181,14 @@ def execute_instruction(
     account = mt5.account_info()
     if terminal is None or account is None:
         raise RuntimeError("MT5 terminal/account unavailable.")
+    if not all(isfinite(float(getattr(account, field))) for field in ("equity", "balance")) or float(account.equity) <= 0:
+        return ExecutionResult(False, None, "Account equity/balance invalid; order blocked.")
+    controls = (risk_per_trade_pct, max_open_risk_pct, max_daily_loss_pct, max_single_risk_pct)
+    if not all(isfinite(float(value)) and float(value) > 0 for value in controls):
+        return ExecutionResult(False, None, "Invalid risk policy; order blocked.")
+    max_single_risk_pct = min(15.0, float(max_single_risk_pct))
+    max_open_risk_pct = min(40.0, float(max_open_risk_pct))
+    max_daily_loss_pct = min(10.0, float(max_daily_loss_pct))
     if not bool(getattr(terminal, "trade_allowed", False)):
         return ExecutionResult(False, None, "Algo Trading is disabled.")
 
@@ -208,7 +213,7 @@ def execute_instruction(
     if direction not in {"BUY", "SELL"}:
         raise ValueError("Unsupported trade direction.")
     symbol = _resolve_symbol(
-        str(payload.get("symbol_hint") or payload.get("market") or "XAUUSD")
+        str(payload.get("market") or payload.get("symbol_hint") or "GOLD")
     )
     sl = float(payload["stop_loss"])
     tp = float(payload["take_profit"])
@@ -272,7 +277,7 @@ def execute_instruction(
         "tp": tp,
         "deviation": 20,
         "magic": MAGIC,
-        "comment": f"GOLD_AI:{str(payload.get('strategy_id','REMOTE'))}"[:31],
+        "comment": f"AZT:{str(payload.get('strategy_id','REMOTE'))}"[:31],
         "type_time": mt5.ORDER_TIME_GTC,
     }
 
@@ -303,9 +308,7 @@ def execute_instruction(
             before_send()
         result = mt5.order_send(request)
         if result is None:
-            if strict_history:
-                raise RuntimeError("MT5 submission returned no result; review broker orders before retrying.")
-            continue
+            raise RuntimeError("MT5 submission returned no result; review broker orders before retrying.")
         done = int(result.retcode) in {
             int(getattr(mt5, "TRADE_RETCODE_DONE", 10009)),
             int(getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010)),

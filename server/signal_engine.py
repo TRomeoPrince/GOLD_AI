@@ -13,6 +13,7 @@ from strategies import StrategyRegistry
 
 from .personal_store import publish_signal, write_status
 from .store import active_clients, enqueue_instruction, news_lock_enabled
+from .reconnect import RetryState
 
 
 def _setup_epoch(signal) -> float:
@@ -40,10 +41,9 @@ def main(stop=None) -> None:
     write_status("signal_engine", state="CONNECTING", message="Connecting market data to MT5")
     print("Connecting signal engine market data to MT5...", flush=True)
     clients = {}
+    retries = RetryState()
     for market, hint in ACTIVE_MARKETS.items():
-        mt5_client = MT5Client(hint)
-        mt5_client.connect()
-        clients[market] = mt5_client
+        clients[market] = MT5Client(hint)
 
     registries = {
         market: StrategyRegistry(market=market)
@@ -51,11 +51,24 @@ def main(stop=None) -> None:
     }
 
     seen: set[str] = set()
-    print("GOLD_AI OWNER SIGNAL ENGINE")
+    print("GOLD_AI OWNER SIGNAL ENGINE / AGORA ZION TRADER")
     print("Protected strategies run here; customer clients receive instructions only.")
     print("Ctrl+C to stop.")
 
+    connected = False
     while not stop.is_set():
+        if not connected:
+            try:
+                for client in clients.values():
+                    client.connect()
+                connected = True
+            except Exception as exc:
+                delay = retries.failed()
+                write_status("signal_engine", state=retries.state, desired=True, retry_in=delay,
+                             failures=retries.failures, message=f"Market data unavailable ({type(exc).__name__}); retrying.")
+                mt5.shutdown()
+                stop.wait(delay)
+                continue
         write_status("signal_engine", state="NEWS_LOCK" if news_lock_enabled() else "SCANNING", markets=list(clients))
         if news_lock_enabled():
             print(f"[{datetime.now().strftime('%H:%M:%S')}] NEWS LOCK active — new entries blocked.")
@@ -64,7 +77,15 @@ def main(stop=None) -> None:
 
         now = datetime.now(timezone.utc).timestamp()
         for market, client in clients.items():
-            candles = client.candles(mt5.TIMEFRAME_M5, M5_BARS)
+            try:
+                candles = client.candles(mt5.TIMEFRAME_M5, M5_BARS)
+            except Exception as exc:
+                connected = False
+                delay = retries.failed()
+                write_status("signal_engine", state=retries.state, desired=True, retry_in=delay,
+                             message=f"Market data interrupted ({type(exc).__name__}); reconnecting.")
+                stop.wait(delay)
+                break
             signals = registries[market].scan(candles)
 
             for signal in signals:
@@ -80,7 +101,7 @@ def main(stop=None) -> None:
                 legacy_key = _legacy_signal_key(market, signal, client.clock.offset_seconds)
                 payload = {
                     "market": market,
-                    "symbol_hint": client.symbol,
+                    "symbol_hint": market,
                     "strategy_id": signal.strategy_id,
                     "direction": signal.direction,
                     "setup_time": str(signal.setup_time),
@@ -105,7 +126,10 @@ def main(stop=None) -> None:
                 )
                 seen.add(key)
 
-        stop.wait(DEMO_POLL_SECONDS)
+        if connected:
+            if retries.recovered():
+                write_status("signal_engine", state="RECOVERED", message="Market data recovered; scanning fresh setups.")
+            stop.wait(DEMO_POLL_SECONDS)
 
 
 if __name__ == "__main__":

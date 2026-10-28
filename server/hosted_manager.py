@@ -14,6 +14,14 @@ from .store import (
     set_hosted_account_status,
 )
 
+_supervisor = None
+
+
+def configure_supervisor(services):
+    """Route Admin-owned hosted executors through its private child pipe."""
+    global _supervisor
+    _supervisor = services
+
 
 def project_root() -> Path:
     override = os.getenv("GOLD_AI_PROJECT_ROOT", "").strip()
@@ -72,11 +80,14 @@ def _pid_alive(pid: int) -> bool:
         ["tasklist", "/FI", f"PID eq {int(pid)}"],
         capture_output=True,
         text=True,
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),
     )
     return str(int(pid)) in result.stdout
 
 
 def worker_log_path(client_id: int) -> Path:
+    if _supervisor is not None:
+        return _supervisor.logs / f'hosted_{int(client_id)}.log'
     log_dir = project_root() / "server" / "hosted_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     return log_dir / f"client_{int(client_id)}.log"
@@ -91,6 +102,24 @@ def start_worker(client_id: int) -> int:
         raise ValueError("Hosted MT5 instance is not provisioned.")
 
     existing_pid = record.get("worker_pid")
+    if _supervisor is not None:
+        name=f'hosted_{int(client_id)}'
+        current=_supervisor.processes.get(name)
+        if current is not None and current.poll() is None:
+            return int(current.pid)
+        if existing_pid and _pid_alive(int(existing_pid)):
+            raise RuntimeError('An older independently started hosted worker is still running. Stop it from the old owner stack before starting AZT hosted trading.')
+        set_hosted_runtime(client_id, worker_pid=None, last_error='')
+        _supervisor.start((name,))
+        process=_supervisor.processes.get(name)
+        if process is None:
+            raise RuntimeError(_supervisor.errors.get(name,'Hosted executor could not be started.'))
+        import time
+        time.sleep(.75)
+        if process.poll() is not None:
+            raise RuntimeError('Hosted executor stopped during startup. See its service log.')
+        set_hosted_runtime(client_id,worker_pid=int(process.pid))
+        return int(process.pid)
     if existing_pid and _pid_alive(int(existing_pid)):
         return int(existing_pid)
     if existing_pid:
@@ -150,6 +179,7 @@ def _stop_terminal_for_record(record: dict) -> None:
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
         capture_output=True,
         text=True,
+        creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0),
     )
 
 
@@ -157,6 +187,15 @@ def stop_worker(client_id: int) -> None:
     record = hosted_account_for_client(client_id)
     if not record:
         raise ValueError("Hosted account request not found.")
+    if _supervisor is not None:
+        name=f'hosted_{int(client_id)}'
+        if name not in _supervisor.processes and record.get('worker_pid') and _pid_alive(int(record['worker_pid'])):
+            raise RuntimeError('This hosted worker belongs to an older owner stack. Stop it from that stack first.')
+        _supervisor.stop_named((name,))
+        set_hosted_runtime(client_id,worker_pid=None)
+        if record['status'] in {'ACTIVE','CONNECTING','FAILED'}:
+            set_hosted_account_status(client_id,'PROVISIONED')
+        return
     pid = record.get("worker_pid")
     if pid:
         subprocess.run(

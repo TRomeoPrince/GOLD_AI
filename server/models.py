@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class AuthorizeRequest(BaseModel):
@@ -9,6 +9,8 @@ class AuthorizeRequest(BaseModel):
     mt5_login: Optional[int] = None
     mt5_server: str = ""
     telegram_username: str = ""
+    display_timezone: str = "UTC"
+    referral_code: str = ""
 
 
 class AuthorizeResponse(BaseModel):
@@ -17,6 +19,11 @@ class AuthorizeResponse(BaseModel):
     status: str = "UNKNOWN"
     message: str = ""
     session_token: str = ""
+    account_id: Optional[int] = None
+    max_mt5_accounts: int = 1
+    display_timezone: str = "UTC"
+    subscription_status: str = ""
+    expires_utc: str = ""
 
 
 class TelegramRequest(BaseModel):
@@ -66,6 +73,7 @@ class TradeInstructionResponse(BaseModel):
     instruction_id: int = 0
     signal_key: str = ""
     payload: dict = {}
+    created_utc: str = ""
 
 
 class TradeAckRequest(BaseModel):
@@ -76,3 +84,22 @@ class TradeAckRequest(BaseModel):
 
 class RenewalRequest(BaseModel):
     plan_code: str = "STARTER"
+
+
+class AZTPaymentRequest(BaseModel):
+    plan_code: str = Field(max_length=40)
+    method: str = Field(max_length=40)
+    proof: str = Field(default="", max_length=7200000)
+    transaction_hash: str = Field(default="", max_length=200)
+
+
+class AZTCodeRequest(BaseModel):
+    code: str = Field(max_length=100)
+
+
+class AZTPreferencesRequest(BaseModel):
+    display_timezone: str = Field(default="UTC", max_length=100)
+
+
+class AZTTelemetryRequest(BaseModel):
+    snapshot: dict = Field(default_factory=dict)

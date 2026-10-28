@@ -80,6 +80,8 @@ def _connection(database=None):
             last_error TEXT NOT NULL DEFAULT ''
         )""")
         con.execute("CREATE INDEX IF NOT EXISTS owner_telegram_pending ON owner_telegram_outbox(state,next_attempt)")
+        if 'media_path' not in {row[1] for row in con.execute('PRAGMA table_info(owner_telegram_outbox)')}:
+            con.execute("ALTER TABLE owner_telegram_outbox ADD COLUMN media_path TEXT NOT NULL DEFAULT ''")
         con.commit()
         yield con
         con.commit()
@@ -90,7 +92,7 @@ def _connection(database=None):
         con.close()
 
 
-def enqueue_owner_event(event_key, text, *, database=None) -> bool:
+def enqueue_owner_event(event_key, text, *, database=None, media_path=None) -> bool:
     """Only persist an event. Never contact Telegram or propagate queue errors."""
     try:
         config = _owner_config()
@@ -102,8 +104,8 @@ def enqueue_owner_event(event_key, text, *, database=None) -> bool:
         now = time.time()
         with _connection(database) as con:
             return con.execute(
-                "INSERT OR IGNORE INTO owner_telegram_outbox(event_key,message,chat_id,token_fingerprint,created,updated) VALUES(?,?,?,?,?,?)",
-                (key, message[:4096], config.chat_id, config.fingerprint, now, now),
+                "INSERT OR IGNORE INTO owner_telegram_outbox(event_key,message,chat_id,token_fingerprint,created,updated,media_path) VALUES(?,?,?,?,?,?,?)",
+                (key, message[:4096], config.chat_id, config.fingerprint, now, now, str(media_path or '')),
             ).rowcount == 1
     except Exception as exc:
         # No payload, destination, raw exception or token-bearing URL in the log.
@@ -244,7 +246,8 @@ def run(stop, *, database=None):
                 continue
             _status("SENDING", f"Sending owner alert, attempt {row['attempts']} of {MAX_ATTEMPTS}.")
             try:
-                message_id = ClientTelegramBot(token=config.token).send_message(row["chat_id"], row["message"])
+                bot = ClientTelegramBot(token=config.token)
+                message_id = bot.send_photo(row['chat_id'], row['media_path'], row['message']) if row.get('media_path') else bot.send_message(row["chat_id"], row["message"])
                 if not isinstance(message_id, int) or message_id <= 0:
                     raise TelegramRequestError("Telegram returned no message confirmation; delivery outcome is unknown.")
             except Exception as exc:
