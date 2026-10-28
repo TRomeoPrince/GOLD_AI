@@ -127,7 +127,7 @@ def test_compare_no_signals_and_no_live_order_calls():
 def test_sell_trailing_uses_break_candle_high():
     bars = [(100., 101., 99., 100.)] * 20
     bars += [(100., 102., 97., 98.), (98., 100., 95., 97.),
-             (97., 98., 91., 92.), (92., 97.5, 89., 93.),
+             (97., 98., 91., 92.), (92., 99., 89., 93.),
              (93., 95., 69., 70.)]
     f = frame(bars)
     event = BreakEvent(22, "SELL", "CONSOLIDATION_BREAK", 94, 98, 91, 2.)
@@ -143,14 +143,23 @@ def test_sell_trailing_uses_break_candle_high():
 def test_end_to_end_backtest_paired_same_entry_no_live_calls():
     from strategies.base import StrategySignal
 
-    f = sample_trade()
-    # Preserve exact strategy inputs by selecting a signal from latest CLOSED candle.
+    bars = [(100., 101., 99., 100.)] * 35
+    bars += [(100., 103., 99., 102.), (102., 104., 101., 103.),
+             (103., 109., 102., 108.), (108., 109., 99.5, 100.),
+             (100., 131., 99.9, 130.)]
+    f = frame(bars)
     class FakeRegistry:
         def scan(self, visible):
-            if pd.Timestamp(visible.iloc[-2]["time"]) != pd.Timestamp(f.at[19, "time"]):
+            if pd.Timestamp(visible.iloc[-2]["time"]) != pd.Timestamp(f.at[34, "time"]):
                 return []
-            return [StrategySignal("TEST", "BUY", "M5", str(f.at[19, "time"]),
+            return [StrategySignal("TEST", "BUY", "M5", str(f.at[34, "time"]),
                                    100., 90., 130., "synthetic research fixture")]
-    r = compare(f, warmup=19, max_hold=10, strategy_registry=FakeRegistry(),
-                trail_timeframes=("M5",))
-    # warmup is intentionally validated by the runner, so use a longer series.
+    result = compare(f, warmup=35, max_hold=10, strategy_registry=FakeRegistry(),
+                     trail_timeframes=("M5",))
+    assert len(result) == 2
+    assert set(result["mode"]) == {"FIXED", "BREAK_CANDLE"}
+    assert result["entry"].nunique() == 1
+    assert result["entry_time"].nunique() == 1
+    assert result["trade_id"].nunique() == 1
+    summary = summarize(result, 1000, .9)
+    assert len(summary) == 2
