@@ -1,5 +1,4 @@
-"""Safety and causal-order tests for isolated break-candle trailing research."""
-from __future__ import annotations
+"""Safety and causal-order tests for isolated break-candle trailing research."""from __future__ import annotations
 
 from types import SimpleNamespace
 import pandas as pd
@@ -123,3 +122,35 @@ def test_compare_no_signals_and_no_live_order_calls():
     f = frame([(100., 100.5, 99.5, 100.)] * 320)
     trades = compare(f, warmup=300, strategy_registry=NoSignals())
     assert trades.empty
+
+
+def test_sell_trailing_uses_break_candle_high():
+    bars = [(100., 101., 99., 100.)] * 20
+    bars += [(100., 102., 97., 98.), (98., 100., 95., 97.),
+             (97., 98., 91., 92.), (92., 97.5, 89., 93.),
+             (93., 95., 69., 70.)]
+    f = frame(bars)
+    event = BreakEvent(22, "SELL", "CONSOLIDATION_BREAK", 94, 98, 91, 2.)
+    fixed = simulate(f, sig("SELL", 110., 70.), 20, {22: [event]},
+                     TrailConfig(), trailing=False, max_hold=10)
+    trailed = simulate(f, sig("SELL", 110., 70.), 20, {22: [event]},
+                       TrailConfig(), trailing=True, max_hold=10)
+    assert fixed["exit_reason"] == "TP"
+    assert trailed["exit_reason"] == "TRAIL_SL"
+    assert trailed["final_sl"] == pytest.approx(98.3)
+
+
+def test_end_to_end_backtest_paired_same_entry_no_live_calls():
+    from strategies.base import StrategySignal
+
+    f = sample_trade()
+    # Preserve exact strategy inputs by selecting a signal from latest CLOSED candle.
+    class FakeRegistry:
+        def scan(self, visible):
+            if pd.Timestamp(visible.iloc[-2]["time"]) != pd.Timestamp(f.at[19, "time"]):
+                return []
+            return [StrategySignal("TEST", "BUY", "M5", str(f.at[19, "time"]),
+                                   100., 90., 130., "synthetic research fixture")]
+    r = compare(f, warmup=19, max_hold=10, strategy_registry=FakeRegistry(),
+                trail_timeframes=("M5",))
+    # warmup is intentionally validated by the runner, so use a longer series.
