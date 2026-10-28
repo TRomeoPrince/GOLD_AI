@@ -1,0 +1,23 @@
+name: Structure-break trailing research checks
+on:
+  push:
+    branches:
+      - experiments/structure-break-candle-trailing
+  workflow_dispatch:
+
+jobs:
+  causal-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install isolated research requirements
+        run: python -m pip install --disable-pip-version-check pandas numpy pytest
+      - name: Compile experimental runner
+        run: python -m py_compile research/structure_break_experiment.py
+      - name: Verify no-lookahead, gap, stop-first and trailing tests
+        run: python -m pytest -q tests/test_structure_break_experiment.py
