@@ -1,4 +1,5 @@
-"""Safety and causal-order tests for isolated break-candle trailing research."""from __future__ import annotations
+"""Safety and causal-order tests for isolated break-candle trailing research."""
+from __future__ import annotations
 
 from types import SimpleNamespace
 import pandas as pd
