@@ -7,7 +7,7 @@ stop-first when both SL and TP touch, and stop-gap fills at the next open.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pandas as pd
@@ -33,6 +33,7 @@ class BreakEvent:
     break_high: float
     break_low: float
     atr: float
+    timeframe: str = "M5"
 
     def proposed_stop(self, buffer_atr: float) -> float:
         buffer = max(0.0, buffer_atr) * self.atr
@@ -112,8 +113,46 @@ def identify_breaks(f: pd.DataFrame, cfg: TrailConfig) -> dict[int, BreakEvent]:
     return events
 
 
+def identify_multiframe_breaks(
+    m5: pd.DataFrame, cfg: TrailConfig, timeframes: tuple[str, ...] = ("M5", "M15", "H1")
+) -> dict[int, list[BreakEvent]]:
+    """Map fully CLOSED M5/M15/H1 breaker candles to their closing M5 bar.
+
+    No partial higher-timeframe candles are included. Lower-timeframe
+    data cannot be invented from M5 bars (M1 is deliberately unsupported).
+    """
+    options = {"M5": ("5min", 1), "M15": ("15min", 3), "H1": ("1h", 12)}
+    if not timeframes or any(tf not in options for tf in timeframes):
+        raise ValueError("Choose one or more of M5,M15,H1.")
+    indexed = pd.Index(pd.to_datetime(m5["time"], utc=True))
+    indices = {v: i for i, v in enumerate(indexed)}
+    result: dict[int, list[BreakEvent]] = {}
+    for tf in dict.fromkeys(timeframes):
+        if tf == "M5":
+            f = m5
+            offset_to_m5 = dict(enumerate(range(len(m5))))
+        else:
+            frequency, count_required = options[tf]
+            bars = m5.set_index("time").resample(frequency, label="left", closed="left").agg(
+                open=("open", "first"), high=("high", "max"),
+                low=("low", "min"), close=("close", "last"),
+                count=("close", "count"),
+            )
+            bars = bars[bars["count"] == count_required].drop(columns="count").dropna().reset_index()
+            f = bars
+            # The end of the final M5 bar of a fully completed TF candle.
+            delta = pd.Timedelta(minutes=(count_required - 1) * 5)
+            offset_to_m5 = {i: indices.get(pd.Timestamp(bars.at[i, "time"]) + delta)
+                            for i in range(len(bars))}
+        for bar_idx, event in identify_breaks(f, cfg).items():
+            idx = offset_to_m5.get(bar_idx)
+            if idx is not None:
+                result.setdefault(idx, []).append(replace(event, bar_index=idx, timeframe=tf))
+    return result
+
+
 def simulate(
-    f: pd.DataFrame, signal, first_bar: int, events: dict[int, BreakEvent],
+    f: pd.DataFrame, signal, first_bar: int, events: dict[int, list[BreakEvent]],
     cfg: TrailConfig, *, trailing: bool, max_hold: int, cost_price: float = 0.0,
 ):
     """OHLC simulator. Neither setup nor stop changes can inspect future bars."""
@@ -141,16 +180,15 @@ def simulate(
             break
         # A completed breaker may change SL only from the NEXT bar open onward.
         if trailing and k > first_bar:
-            event = events.get(k - 1)
-            if event is not None and event.direction == side:
-                previous_close = float(f.at[k - 1, "close"])
-                favorable = previous_close - entry if side == "BUY" else entry - previous_close
-                if favorable / initial_risk >= cfg.activate_r:
-                    proposed = event.proposed_stop(cfg.atr_buffer)
-                    improves = (stop < proposed < op) if side == "BUY" else (op < proposed < stop)
-                    if improves:
-                        stop = proposed
-                        changes += 1
+            candidates = events.get(k - 1, [])
+            previous_close = float(f.at[k - 1, "close"])
+            favorable = previous_close - entry if side == "BUY" else entry - previous_close
+            if favorable / initial_risk >= cfg.activate_r:
+                valid = [event.proposed_stop(cfg.atr_buffer) for event in candidates if event.direction == side]
+                valid = [price for price in valid if (stop < price < op) if side == "BUY"] if side == "BUY" else [price for price in valid if op < price < stop]
+                if valid:
+                    stop = max(valid) if side == "BUY" else min(valid)
+                    changes += 1
         hit_sl = lo <= stop if side == "BUY" else hi >= stop
         hit_tp = hi >= target if side == "BUY" else lo <= target
         if hit_sl or hit_tp:
@@ -171,14 +209,14 @@ def compare(
     f: pd.DataFrame, *, market: str = "GOLD", warmup: int = 300,
     history_window: int = 600, max_hold: int = 60,
     cfg: TrailConfig = TrailConfig(), cost_price: float = 0,
-    strategy_registry=None,
+    strategy_registry=None, trail_timeframes: tuple[str, ...] = ("M5", "M15", "H1"),
 ) -> pd.DataFrame:
     if cost_price < 0 or max_hold < 1 or warmup < 30:
         raise ValueError("Invalid backtest settings.")
     if strategy_registry is None:
         from strategies.registry import StrategyRegistry
         strategy_registry = StrategyRegistry(market=market)
-    events = identify_breaks(f, cfg)
+    events = identify_multiframe_breaks(f, cfg, trail_timeframes)
     seen: set[tuple] = set()
     rows = []
     for i in range(warmup, len(f)):
@@ -272,6 +310,7 @@ def main():
     p.add_argument("--history-window", type=int, default=600)
     p.add_argument("--max-hold", type=int, default=60)
     p.add_argument("--activate-r", type=float, default=0.0)
+    p.add_argument("--trail-timeframes", default="M5,M15,H1", help="Comma-separated M5,M15,H1; use multiple confirmed break timeframes")
     p.add_argument("--buffer-atr", type=float, default=0.15)
     p.add_argument("--cost-price", type=float, default=0.0,
                    help="Explicit round-trip price cost; 0 means gross results, NOT cost-adjusted")
@@ -282,7 +321,8 @@ def main():
     data = get_mt5_data(args.mt5_bars, args.symbol) if args.mt5_bars else load_bars(args.csv)
     trades = compare(data, market=args.market, warmup=args.warmup,
                      history_window=args.history_window, max_hold=args.max_hold,
-                     cfg=cfg, cost_price=args.cost_price)
+                     cfg=cfg, cost_price=args.cost_price,
+                     trail_timeframes=tuple(x.strip().upper() for x in args.trail_timeframes.split(",") if x.strip()))
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
     trades.to_csv(out / "paired_trades.csv", index=False)
@@ -294,6 +334,7 @@ def main():
         paired.to_csv(out / "paired_deltas.csv")
         print("Paired trades:", len(paired), "Net delta R:", round(float(paired.delta_r.sum()), 4))
     print("Actual M5 candles:", len(data), "Source:", "MT5" if args.mt5_bars else args.csv)
+    print("Trail timeframes:", args.trail_timeframes)
     print("Cost: ", args.cost_price, "(price units, round trip; zero = GROSS only)")
     print(summary.to_string(index=False) if not summary.empty else "No qualified signals.")
     print("Reports:", out.resolve())
