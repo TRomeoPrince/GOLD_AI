@@ -228,7 +228,7 @@ def render_positions_cards(positions, *, display_timezone='UTC', output_dir=None
             line(710,'Waiting for an enabled MT5 worker snapshot.',27,'#aebfb9')
         for position_index,row in enumerate(page):
             top=595+position_index*260
-            draw.rounded_rectangle((94,top-12,988,top+235),radius=18,fill='#102630',outline='#40545b',width=1)
+            draw.rounded_rectangle((94,top-12,988,top+235),radius=18,outline='#d8bd7c',width=2)
             currency=str(row.get('currency') or 'Account currency')
             side=str(row.get('direction','')).upper()
             line(top,f"{side} {row.get('symbol','—')} · {_quantity(row.get('volume'))} lot",33,'#fa8586' if side=='SELL' else '#6ed6ac',True)
