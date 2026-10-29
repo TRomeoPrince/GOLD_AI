@@ -1,0 +1,48 @@
+name: Transparent Telegram PnL card regression
+on:
+  push:
+    branches:
+      - fix/telegram-transparent-pnl-2026-10-29
+  workflow_dispatch:
+
+jobs:
+  render-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install just the card-rendering dependencies
+        run: python -m pip install "Pillow>=10.0.0"
+      - name: Compile card code
+        run: python -m py_compile server/pnl_cards.py
+      - name: Test card rendering with source templates (no broker, no Telegram)
+        run: python -m unittest discover -s tests -p test_telegram_card_styles.py -v
+      - name: Render sample cards for visual review (simulated data only)
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from server.pnl_cards import render_trade_card
+          folder = Path("Reports/pnl_preview")
+          folder.mkdir(parents=True, exist_ok=True)
+          common = {
+              "account_key": "PREVIEW | SIMULATED", "ticket": "DEMO-0001",
+              "symbol": "XAUUSD.c", "volume": 0.03, "entry": 4052.4,
+              "current_price": 4046.22, "sl": 4050.66, "tp": 4029.58,
+              "strategy": "M15_BREAKOUT", "currency": "USD",
+              "state": "OPEN", "observed_utc": datetime.now(timezone.utc).isoformat(),
+              "risk_pct": 0.9,
+          }
+          render_trade_card(dict(common, direction="SELL", pnl=17.76), output=folder/"floating_profit.png")
+          render_trade_card(dict(common, direction="BUY", pnl=-7.92), output=folder/"floating_loss.png")
+          print("Created simulated previews:", list(folder.iterdir()))
+          PY
+      - name: Upload PNG previews
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZT-transparent-PnL-visual-previews
+          path: Reports/pnl_preview/*.png
+          retention-days: 14

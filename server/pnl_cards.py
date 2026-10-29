@@ -82,19 +82,28 @@ def _fit_text(draw, text, width, size, *, bold=False, minimum=22):
 
 
 def _canvas(positive=True):
-    template=asset_path('IMAGES/PnL_CARDS/'+('PROFIT.jpg' if positive else 'LOSS.jpg'))
+    """Preserve the supplied landscape with a feathered, transparent text area.
+
+    Older versions pasted a nearly opaque #08131f rectangle across the middle
+    of the supplied image. This removed the nature background from every card.
+    Instead, soften the preprinted demo labels on a *copy* of the original by
+    blurring the underlying pixels in place. The card has NO colored fill; the
+    original photograph is visible through the entire information region.
+    """
+    template = asset_path('IMAGES/PnL_CARDS/' + ('PROFIT.jpg' if positive else 'LOSS.jpg'))
     with Image.open(template) as original:
-        original=original.convert('RGB')
-        image=ImageOps.fit(original,(1080,1350),centering=(.5,.38))
-    # Remove every printed example number while retaining the supplied official
-    # star/landscape exterior. No template or source image is overwritten.
-    bounds=(64,278,1016,1230)
-    texture=image.crop((0,0,1080,265)).resize((952,952)).filter(ImageFilter.GaussianBlur(4))
-    texture=Image.blend(texture,Image.new('RGB',texture.size,'#08131f'),.88)
-    image.paste(texture,bounds)
-    draw=ImageDraw.Draw(image)
-    draw.rounded_rectangle(bounds,radius=32,outline='#e8bd67',width=3)
-    return image,draw,template
+        image = ImageOps.fit(original.convert('RGB'), (1080, 1350), centering=(.5, .38))
+    # Original demo figures are embedded in the supplied JPEG. A feathered
+    # local blur obscures those old figures without inserting a solid panel.
+    # Keep the image scenery, colors, skyline and source templates untouched.
+    mask = Image.new('L', image.size, 0)
+    area = (68, 282, 1012, 1226)
+    ImageDraw.Draw(mask).rounded_rectangle(area, radius=34, fill=235)
+    mask = mask.filter(ImageFilter.GaussianBlur(24))
+    soft = image.filter(ImageFilter.GaussianBlur(36))
+    image.paste(soft, (0, 0), mask)
+    draw = ImageDraw.Draw(image)
+    return image, draw, template
 
 
 def _save(image,template,output=None):
@@ -219,7 +228,7 @@ def render_positions_cards(positions, *, display_timezone='UTC', output_dir=None
             line(710,'Waiting for an enabled MT5 worker snapshot.',27,'#aebfb9')
         for position_index,row in enumerate(page):
             top=595+position_index*260
-            draw.rounded_rectangle((94,top-12,988,top+235),radius=18,fill='#102630',outline='#40545b',width=1)
+            draw.rounded_rectangle((94,top-12,988,top+235),radius=18,outline='#d8bd7c',width=2)
             currency=str(row.get('currency') or 'Account currency')
             side=str(row.get('direction','')).upper()
             line(top,f"{side} {row.get('symbol','—')} · {_quantity(row.get('volume'))} lot",33,'#fa8586' if side=='SELL' else '#6ed6ac',True)
