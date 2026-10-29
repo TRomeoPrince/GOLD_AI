@@ -1,0 +1,49 @@
+name: Historical XAUUSD break-candle trailing backtest
+on:
+  push:
+    branches:
+      - experiments/structure-break-candle-trailing
+    paths:
+      - research/fetch_dukascopy_m5.py
+      - research/structure_break_experiment.py
+      - .github/workflows/historical-trail-backtest.yml
+  workflow_dispatch:
+
+jobs:
+  historical-compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backtest dependencies
+        run: python -m pip install -q pandas numpy
+      - name: Fetch real Dukascopy XAUUSD BID minute candles and aggregate M5 UTC
+        run: python -m research.fetch_dukascopy_m5 --from 2026-09-14 --to 2026-10-26 --output data/dukascopy_xauusd_bid_m5.csv
+      - name: Compare fixed SL with structure-break-candle trailing (identical entries)
+        run: |
+          python -m research.structure_break_experiment --csv data/dukascopy_xauusd_bid_m5.csv --market GOLD --warmup 300 --history-window 180 --max-hold 60 --balance 1000 --risk-pct 0.9 --activate-r 0 --buffer-atr 0.15 --cost-price 0.50 --output Reports/dukascopy_sep_oct_2026
+      - name: Print aggregate side by side
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          t = pd.read_csv("Reports/dukascopy_sep_oct_2026/paired_trades.csv")
+          s = pd.read_csv("Reports/dukascopy_sep_oct_2026/summary.csv")
+          f = t.groupby("mode").agg(trades=("r_multiple","size"),net_r=("r_multiple","sum"),win_rate=("r_multiple",lambda x: 100*(x>0).mean()),avg_r=("r_multiple","mean"),trails=("trail_updates","sum")).round(3)
+          print("\n*** AGGREGATE HISTORICAL COMPARISON (Dukascopy BID, September-October 2026, price-cost 0.50) ***", flush=True)
+          print(f.to_string(), flush=True)
+          print("\n*** BY STRATEGY ***", flush=True)
+          print(s.to_string(index=False), flush=True)
+          PY
+      - name: Save research reports and historical bars
+        uses: actions/upload-artifact@v4
+        with:
+          name: dukascopy-structure-trailing-report
+          path: |
+            Reports/dukascopy_sep_oct_2026/*.csv
+            data/dukascopy_xauusd_bid_m5.csv
+          retention-days: 14
