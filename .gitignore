@@ -38,3 +38,11 @@ build/azt_pyi/
 dist_azt/
 dist_telegram_style/
 build/telegram_style_pyi/
+
+# Generated output from both current and retired Windows packagers
+build/admin_pyi/
+build/pyi/
+dist/
+dist_fixed/
+.pytest_cache/
+.coverage
