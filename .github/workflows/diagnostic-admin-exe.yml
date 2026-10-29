@@ -1,0 +1,32 @@
+name: Diagnostic Admin EXE
+on:
+  push:
+    branches: [fix/azt-connection-regression-20261029]
+    paths: [".github/workflows/diagnostic-admin-exe.yml"]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        shell: cmd
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server\requirements.txt
+          pip install pyinstaller
+      - name: Admin regression tests
+        shell: cmd
+        run: python -m unittest discover -s tests -p "test_connection_regression.py" -v
+      - name: Build Admin diagnostic executable
+        shell: cmd
+        run: python -m PyInstaller --clean --noconfirm --distpath dist --workpath build\admin_pyi build\GOLD_AI_Admin.spec
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GOLD-AI-Admin-Diagnostic
+          path: dist/GOLD_AI_Admin.exe
+          if-no-files-found: error
+          retention-days: 14
