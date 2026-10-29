@@ -1,0 +1,16 @@
+name: AZT Admin connection regression
+on:
+  push:
+    branches: [fix/azt-connection-regression-20261029]
+    paths: ["tests/**", "server/**", ".github/workflows/connection-regression.yml"]
+  workflow_dispatch:
+jobs:
+  regression:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test Admin reconnect state
+        run: python -m unittest discover -s tests -p "test_connection_regression.py" -v
