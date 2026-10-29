@@ -27,6 +27,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: GOLD-AI-Admin-Diagnostic
-          path: dist/GOLD_AI_Admin.exe
+          path: dist/AZT_Admin.exe
           if-no-files-found: error
           retention-days: 14
