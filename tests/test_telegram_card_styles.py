@@ -76,6 +76,24 @@ class TelegramCardStyleTests(unittest.TestCase):
                     cards.render_trade_card(self.sample(pnl=1),output=original)
         self.assertEqual(hashes,[hashlib.sha256(path.read_bytes()).digest() for path in originals])
 
+    def test_transparent_card_keeps_landscape_brightness(self):
+        # Regression: a dark overlay previously covered most of the supplied
+        # natural scenery, even though the source templates were preserved.
+        from PIL import ImageOps, ImageStat
+        for positive, name in ((True, 'PROFIT'), (False, 'LOSS')):
+            path = cards.asset_path('IMAGES/PnL_CARDS/' + name + '.jpg')
+            with Image.open(path) as original:
+                reference = ImageOps.fit(original.convert('RGB'), (1080, 1350),
+                                         centering=(.5, .38))
+            rendered, _, _ = cards._canvas(positive)
+            # Blurring in place cannot make the whole center an opaque black box.
+            crop = (130, 360, 950, 980)
+            raw_mean = ImageStat.Stat(reference.crop(crop).convert('L')).mean[0]
+            rendered_mean = ImageStat.Stat(rendered.crop(crop).convert('L')).mean[0]
+            self.assertLess(abs(raw_mean-rendered_mean), 18)
+            # Nature outside the information area stays pixel-identical.
+            self.assertEqual(reference.getpixel((20, 80)), rendered.getpixel((20, 80)))
+
     def test_positions_unknown_total_and_stale_marker_remain_truthful(self):
         captured=[]
         original=cards._fit_text
