@@ -1,0 +1,52 @@
+name: Secondary published OHLC trailing comparison
+on:
+  push:
+    branches:
+      - experiments/structure-break-candle-trailing
+    paths:
+      - .github/workflows/public-ohlc-trailing.yml
+  workflow_dispatch:
+
+jobs:
+  published-ohlc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -q pandas numpy
+      - name: Fetch independent public XAUUSD M5 CSV (published mid quotes)
+        run: |
+          python - <<'PY'
+          from urllib.request import urlretrieve
+          import pandas as pd
+          from pathlib import Path
+          url="https://raw.githubusercontent.com/Sai310421/xauusd-data/main/csv/XAUUSD/XAUUSD_M5_2026Q1Q2.csv"
+          path=Path("data/public_gold_m5.csv")
+          path.parent.mkdir(exist_ok=True)
+          urlretrieve(url, path)
+          f=pd.read_csv(path)
+          print("FULL SOURCE",len(f),list(f.columns),flush=True)
+          f=f.rename(columns={"datetime":"time"}).tail(5200).copy()
+          f.to_csv(path,index=False)
+          print("EVALUATION PERIOD",len(f),f.time.iloc[0],f.time.iloc[-1],flush=True)
+          PY
+      - name: Compare same trading rules fixed versus break-candle
+        run: python -m research.structure_break_experiment --csv data/public_gold_m5.csv --market GOLD --warmup 300 --history-window 180 --max-hold 60 --balance 1000 --risk-pct 0.9 --activate-r 0 --buffer-atr 0.15 --cost-price 0.50 --output Reports/public_gold_test
+      - name: Print paired outcomes
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          t=pd.read_csv("Reports/public_gold_test/paired_trades.csv")
+          s=pd.read_csv("Reports/public_gold_test/summary.csv")
+          print("N=",len(t)//2,"PAIRED POSITIONS",flush=True)
+          print(t.groupby("mode").agg(trades=("r_multiple","size"),net_r=("r_multiple","sum"),win_rate=("r_multiple",lambda x:100*(x>0).mean()),avg_r=("r_multiple","mean"),trails=("trail_updates","sum")).to_string(),flush=True)
+          print(s.to_string(index=False),flush=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: published-mid-quote-gold-comparison
+          path: Reports/public_gold_test/*.csv
+          retention-days: 14
