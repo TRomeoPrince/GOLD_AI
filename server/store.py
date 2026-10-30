@@ -92,6 +92,9 @@ class ClientRecord:
 
 
 def connect() -> sqlite3.Connection:
+    # Standalone owner EXEs can start with no pre-existing server directory.
+    # Do not truncate or migrate an existing database just to create its parent.
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=10, factory=_ManagedConnection)
     con.row_factory = sqlite3.Row
     try:
