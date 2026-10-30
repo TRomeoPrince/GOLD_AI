@@ -380,6 +380,52 @@ class GoldAIAdmin(AdminWorkspace, tk.Tk):
                     messagebox.showerror("AZT Admin", str(exc))
                 return
 
+    def issue_distributor_trial(self):
+        client = self._selected_client_record()
+        if client is None:
+            return
+        from .trial_licenses import issue, status
+        if status(client.id) is not None:
+            messagebox.showwarning("30-Day Trial", "This client has already received a distributor trial. A new EXE or pairing cannot reset its expiry.", parent=self)
+            return
+        if not messagebox.askyesno("Issue 30-Day Trial", f"Issue a one-time, 30-day trial for {client.name}?\n\nThe 30 days start at first successful pairing against this Admin server's UTC clock. Client PC time changes cannot extend it.", parent=self):
+            return
+        try:
+            issue(client.id)
+            self.clipboard_clear()
+            self.clipboard_append(client.pairing_code)
+            self.status.set(f"{client.name}: 30-day distributor trial pending first pairing; code copied.")
+            messagebox.showinfo("Trial Issued", "30-day trial issued. Pairing code copied.\nThe client must pair while this Admin server is online.", parent=self)
+            self.refresh()
+        except Exception as exc:
+            messagebox.showerror("Trial Error", str(exc), parent=self)
+
+    def revoke_distributor_trial(self):
+        client = self._selected_client_record()
+        if client is None:
+            return
+        if not messagebox.askyesno("Revoke Trial", f"Revoke {client.name}'s trial now? New trading entries will be blocked.", parent=self):
+            return
+        try:
+            from .trial_licenses import change
+            change(client.id, "revoke")
+            self.refresh()
+        except Exception as exc:
+            messagebox.showerror("Trial Error", str(exc), parent=self)
+
+    def convert_distributor_trial(self):
+        client = self._selected_client_record()
+        if client is None:
+            return
+        if not messagebox.askyesno("Convert Trial", f"Remove {client.name}'s 30-day trial cap?\n\nThis DOES NOT grant paid access. Configure their normal subscription separately.", parent=self):
+            return
+        try:
+            from .trial_licenses import change
+            change(client.id, "convert")
+            self.refresh()
+        except Exception as exc:
+            messagebox.showerror("Trial Error", str(exc), parent=self)
+
     def copy_pairing(self):
         if not self.selected_name:
             messagebox.showwarning("AZT Admin", "Select a client first.")
