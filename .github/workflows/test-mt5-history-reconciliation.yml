@@ -1,0 +1,24 @@
+name: MT5 history reconciliation safety tests
+on:
+  push:
+    branches:
+      - fix/mt5-history-reconciliation-2026-10-30
+  workflow_dispatch:
+
+jobs:
+  historical-read-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install isolated dependencies
+        run: python -m pip install -q cryptography
+      - name: Compile historical data collector
+        run: python -m compileall -q server/trade_telemetry.py server/admin_workspace.py
+      - name: Validate broker-time offset, recent closed deals and no order sending
+        run: python -m unittest discover -s tests -p test_telegram_telemetry.py -v
