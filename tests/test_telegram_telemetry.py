@@ -270,6 +270,8 @@ class TelegramTelemetryTests(unittest.TestCase):
         api.positions_get.return_value = []
         api.DEAL_TYPE_BUY, api.DEAL_TYPE_SELL = 0, 1
         api.DEAL_ENTRY_IN, api.DEAL_ENTRY_OUT = 0, 1
+        api.DEAL_ENTRY_INOUT, api.DEAL_ENTRY_OUT_BY = 2, 3
+        api.DEAL_REASON_SL, api.DEAL_REASON_TP, api.DEAL_REASON_SO = 4, 5, 6
         api.history_deals_get.side_effect = (
             lambda start, end: [d for d in (entry, exit_deal) if start.timestamp() <= d.time <= end.timestamp()]
         )
