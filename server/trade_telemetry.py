@@ -357,9 +357,40 @@ def capture_mt5(api, *, clock_offset_seconds=0, lookback_days=30):
         raise RuntimeError("MT5 telemetry requires a real verified account identity.")
     now = datetime.now(utc_timezone.utc)
     positions = api.positions_get()
-    deals = api.history_deals_get(now - timedelta(days=max(1, min(365, lookback_days))), now)
-    if positions is None or deals is None:
-        raise RuntimeError("MT5 positions/history unavailable; last snapshot retained.")
+    if positions is None:
+        raise RuntimeError("MT5 open positions unavailable; prior snapshot retained.")
+
+    # MT5 broker feeds may encode their wall-clock time in raw epoch seconds.
+    # The timestamp() function below subtracts the calibrated feed offset.
+    # The HISTORY QUERY needs the same offset, or a deal closed now can lie
+    # outside the request's UTC end and today's results appear to be missing.
+    if not isinstance(clock_offset_seconds, (int, float)) or not math.isfinite(clock_offset_seconds) or abs(clock_offset_seconds) > 14 * 3600:
+        raise ValueError("Invalid calibrated MT5 broker offset.")
+    feed_now = now + timedelta(seconds=clock_offset_seconds)
+    periods = (
+        (feed_now - timedelta(days=max(1, min(365, lookback_days))), feed_now + timedelta(minutes=2)),
+        (feed_now - timedelta(days=2), feed_now + timedelta(minutes=2)),
+    )
+    deals_by_ticket = {}
+    failed_windows = 0
+    for start, end in periods:
+        try:
+            result = api.history_deals_get(start, end)
+        except (RuntimeError, OSError, ValueError):
+            result = None
+        if result is None:
+            failed_windows += 1
+            continue
+        for deal in result:
+            ticket = getattr(deal, "ticket", None)
+            if ticket is None:
+                continue
+            deals_by_ticket[str(ticket)] = deal
+    deals = sorted(deals_by_ticket.values(), key=lambda item: (getattr(item, "time", 0), getattr(item, "ticket", 0)))
+    history_status = "OK" if failed_windows == 0 else "DEGRADED" if failed_windows < len(periods) else "UNAVAILABLE"
+    # Even when both history ranges fail, open positions must be refreshed;
+    # existing closed deals remain in the DB and will be reconciled later.
+
     def timestamp(item, name="time"):
         value = float(getattr(item, name, 0) or 0)
         return utc_iso(value - clock_offset_seconds) if value > 0 else None
@@ -417,4 +448,5 @@ def capture_mt5(api, *, clock_offset_seconds=0, lookback_days=30):
                            "notes": "Partial close; remaining volume was retained at this exit." if partial else "",
                            "close_reason": {int(getattr(api, "DEAL_REASON_SL", 4)): "SL HIT", int(getattr(api, "DEAL_REASON_TP", 5)): "TP HIT", int(getattr(api, "DEAL_REASON_SO", 6)): "STOP OUT"}.get(int(getattr(last, "reason", -1)), "")})
     summary = {name: getattr(account, name, None) for name in ("login", "server", "currency", "balance", "equity", "margin", "margin_free")}
-    return {"observed_utc": now.isoformat(), "account": summary, "positions": open_rows, "trades": closed}
+    return {"observed_utc": now.isoformat(), "account": summary, "positions": open_rows, "trades": closed,
+            "history_sync": history_status, "history_window_failures": failed_windows}
