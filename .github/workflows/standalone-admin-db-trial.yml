@@ -1,0 +1,32 @@
+name: AZT standalone Admin DB and UTC distributor-trial checks
+on:
+  push:
+    branches: [fix/admin-standalone-db-utc-trial-20261030]
+  workflow_dispatch:
+jobs:
+  validate-and-build-owner:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install AZT owner runtime
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r server/requirements.txt pyinstaller python-dotenv
+      - name: Compile and test local owner data persistence and UTC trial
+        run: |
+          python -m py_compile server/store.py server/admin_launcher.py server/azt_store.py server/app.py server/trial_licenses.py
+          python -m unittest discover -s tests -p test_standalone_admin_db.py -v
+          python -m unittest discover -s tests -p test_distributor_trials.py -v
+      - name: Build standalone AZT Admin
+        run: python -m PyInstaller --clean --noconfirm --distpath dist_trial_fixed --workpath build/trial_admin_pyi build/GOLD_AI_Admin.spec
+      - name: Upload fixed Admin executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZT-Admin-Standalone-DB-Fixed
+          path: dist_trial_fixed/AZT_Admin.exe
+          if-no-files-found: error
+          retention-days: 30
