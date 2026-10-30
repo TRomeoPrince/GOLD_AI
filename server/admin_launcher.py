@@ -29,15 +29,49 @@ def external_runtime(external):
 
 
 def configure():
-    root = Path(os.environ.get("GOLD_AI_HOME", Path(sys.executable).resolve().parent.parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent)).resolve()
+    """Keep owner state writable and durable even if only the EXE is downloaded.
+
+    Never create a fresh database beside an arbitrary Downloads executable.
+    Respect explicit owner paths, discover an existing legacy database, and
+    otherwise reuse the previous %LOCALAPPDATA%/GOLD_AI/server fallback.
+    """
+    explicit = os.getenv("GOLD_AI_HOME", "").strip()
+    override_db = os.getenv("GOLD_AI_DB_PATH", "").strip()
+    if explicit:
+        root = Path(explicit).expanduser().resolve()
+    elif override_db:
+        root = Path(override_db).expanduser().resolve().parent.parent
+    elif getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        candidates = (
+            exe.parent.parent,
+            exe.parent,
+            Path.cwd(),
+            Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1",
+        )
+        root = next((folder for folder in candidates
+                     if (folder / "server" / "gold_ai_server.db").is_file()), None)
+        if root is None:
+            root = next((folder for folder in candidates
+                         if (folder / ".env").is_file() and (folder / "server").is_dir()), None)
+        if root is None:
+            root = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "GOLD_AI"
+    else:
+        root = Path(__file__).resolve().parent.parent
+    root = root.resolve()
+    state = Path(os.environ.get("GOLD_AI_STATE_DIR") or root / "server").expanduser().resolve()
+    db = Path(override_db).expanduser().resolve() if override_db else state / "gold_ai_server.db"
+    # Fail with a useful permissions error rather than sqlite3.OperationalError.
+    state.mkdir(parents=True, exist_ok=True)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     from dotenv import load_dotenv
     load_dotenv(root / ".env", override=False)
-    os.environ.setdefault("GOLD_AI_DB_PATH", str(root / "server" / "gold_ai_server.db"))
-    os.environ.setdefault("GOLD_AI_STATE_DIR", str(root / "server"))
+    os.environ.setdefault("GOLD_AI_DB_PATH", str(db))
+    os.environ.setdefault("GOLD_AI_STATE_DIR", str(state))
     os.environ.setdefault("GOLD_AI_PROJECT_ROOT", str(root))
     os.chdir(root)
     return root
-
 
 def worker(name):
     if getattr(sys, "frozen", False):
