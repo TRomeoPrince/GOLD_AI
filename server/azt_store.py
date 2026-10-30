@@ -95,6 +95,15 @@ def migrate(con):
     CREATE TABLE IF NOT EXISTS account_instruction_deliveries(instruction_id INTEGER NOT NULL,account_id INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDING',ack_message TEXT NOT NULL DEFAULT '',acked_utc TEXT NOT NULL DEFAULT '',dispatched_utc TEXT NOT NULL DEFAULT '',PRIMARY KEY(instruction_id,account_id));
     CREATE TABLE IF NOT EXISTS azt_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,created_utc TEXT NOT NULL,read_utc TEXT NOT NULL DEFAULT '',event_key TEXT UNIQUE);
     CREATE TABLE IF NOT EXISTS azt_events(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,message TEXT NOT NULL,client_id INTEGER,created_utc TEXT NOT NULL,event_key TEXT UNIQUE);
+    CREATE TABLE IF NOT EXISTS azt_distributor_trials(
+        client_id INTEGER PRIMARY KEY,
+        days INTEGER NOT NULL DEFAULT 30,
+        created_utc TEXT NOT NULL,
+        activated_utc TEXT NOT NULL DEFAULT '',
+        expires_utc TEXT NOT NULL DEFAULT '',
+        revoked_utc TEXT NOT NULL DEFAULT '',
+        converted_utc TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY(client_id) REFERENCES clients(id));
     CREATE TABLE IF NOT EXISTS referral_codes(client_id INTEGER PRIMARY KEY,code TEXT NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS referral_links(client_id INTEGER PRIMARY KEY,referrer_id INTEGER NOT NULL,created_utc TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS referral_rewards(id INTEGER PRIMARY KEY AUTOINCREMENT,payment_id INTEGER NOT NULL UNIQUE,referrer_id INTEGER NOT NULL,client_id INTEGER NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'PENDING',created_utc TEXT NOT NULL,paid_utc TEXT NOT NULL DEFAULT '');
@@ -212,7 +221,12 @@ def _subscription_summary(con, client_id, now=None):
     if client["status"] != "ACTIVE":
         effective = str(client["status"])
     allowed = client["status"] == "ACTIVE" and sub["status"] in {"ACTIVE", "TRIAL", "EXPIRING SOON"} and effective not in {"EXPIRED", "INVALID_EXPIRY"}
-    return {"subscription": sub, "allowed": allowed, "effective_status": effective, "remaining_seconds": remaining, "display_timezone": client["display_timezone"], "max_mt5_accounts": int(client["max_mt5_accounts"] or sub["max_mt5_accounts"] or 1), "reason": "OK" if allowed else "SUBSCRIPTION_" + effective.replace(" ", "_")}
+    from .trial_licenses import apply_access
+    basic = {"subscription": sub, "allowed": allowed, "effective_status": effective,
+             "remaining_seconds": remaining, "display_timezone": client["display_timezone"],
+             "max_mt5_accounts": int(client["max_mt5_accounts"] or sub["max_mt5_accounts"] or 1),
+             "reason": "OK" if allowed else "SUBSCRIPTION_" + effective.replace(" ", "_")}
+    return apply_access(con, client_id, basic, now=now)
 
 
 def subscription_summary(client_id):
