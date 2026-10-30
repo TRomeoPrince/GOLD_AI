@@ -234,9 +234,18 @@ def ingest_snapshot(client_id, account_key, snapshot, *, database=None):
     new_closed, new_open, new_stop_updates = [], [], []
     with _connection(database) as con:
         con.execute("BEGIN IMMEDIATE")
-        previous = con.execute("SELECT observed_utc,first_observed_utc FROM azt_account_snapshots WHERE scope=? AND account_key=?", (scope, key)).fetchone()
+        previous = con.execute("SELECT observed_utc,first_observed_utc,account_json FROM azt_account_snapshots WHERE scope=? AND account_key=?", (scope, key)).fetchone()
         if previous and observed <= previous["observed_utc"]:
             return {"accepted": False, "new_closed": [], "new_open": [], "new_stop_updates": []}
+        prior_summary = json.loads(previous["account_json"]) if previous else {}
+        history_sync = snapshot.get("history_sync", "UNKNOWN")
+        if history_sync not in {"OK", "DEGRADED", "UNAVAILABLE", "UNKNOWN"}:
+            raise ValueError("Invalid history synchronization status.")
+        summary["history_sync"] = history_sync
+        summary["history_window_failures"] = min(2, max(0, int(snapshot.get("history_window_failures") or 0)))
+        # A failed poll must not overwrite the last verified history refresh.
+        summary["history_last_success_utc"] = observed if history_sync in {"OK", "DEGRADED"} else prior_summary.get("history_last_success_utc")
+        summary["history_last_full_utc"] = observed if history_sync == "OK" else prior_summary.get("history_last_full_utc")
         previous_open = {row["ticket"]: json.loads(row["payload_json"]) for row in con.execute("SELECT ticket,payload_json FROM azt_trades WHERE scope=? AND account_key=? AND kind='OPEN'", (scope, key))}
         execution_details = {row["ticket"]: json.loads(row["details_json"]) for row in con.execute("SELECT ticket,details_json FROM azt_execution_details WHERE scope=? AND account_key=?", (scope, key))}
         for row in positions + trades:
