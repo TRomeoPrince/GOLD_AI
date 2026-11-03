@@ -25,12 +25,27 @@ jobs:
           dest=Path("data/gold.csv")
           dest.parent.mkdir(parents=True,exist_ok=True)
           urlretrieve("https://raw.githubusercontent.com/Sai310421/xauusd-data/main/csv/XAUUSD/XAUUSD_M5_2026Q1Q2.csv",dest)
-          f=pd.read_csv(dest).tail(3000)
+          f=pd.read_csv(dest).tail(12000)
           f.to_csv(dest,index=False)
           print("TIME WINDOW",len(f),f.iloc[0].to_dict(),f.iloc[-1].to_dict(),flush=True)
           PY
       - name: Compare current S/R and confirmed S/R with or without lock
-        run: python -u -m research.sr_m5_confirmation_backtest --csv data/gold.csv --limit 3000 --warmup 300 --history 180 --max-hold 60 --cost-price 0.5 --balance 2000 --risk-pct 1 --output Reports/sr_quick
+        run: python -u -m research.sr_m5_confirmation_backtest --csv data/gold.csv --limit 12000 --warmup 300 --history 180 --max-hold 60 --cost-price 0.5 --balance 2000 --risk-pct 1 --output Reports/sr_quick
+      - name: Test cost sensitivity at price cost 1.0 (no strategy rescanning)
+        run: |
+          python - <<'PY'
+          import pandas as pd
+          from pathlib import Path
+          from research.sr_m5_confirmation_backtest import summarize
+          base=Path("Reports/sr_quick")
+          t=pd.read_csv(base/"sr_trades.csv")
+          counts=pd.read_csv(base/"sr_counts.csv")
+          t["net_r"]=t["net_r"]-0.5/t["initial_risk_price"]
+          summary=summarize(t,counts,balance=2000,risk_pct=1.)
+          summary.to_csv(base/"sr_summary_cost1.csv",index=False)
+          print("ALTERNATE HIGHER EXECUTION PRICE COST (1.00 vs 0.50):")
+          print(summary.to_string(index=False),flush=True)
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: SR-M5-Confirmation-Quick-Results
