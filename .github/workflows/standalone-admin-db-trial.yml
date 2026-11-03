@@ -29,8 +29,16 @@ jobs:
         run: |
           $probe = Join-Path $env:RUNNER_TEMP 'azt_signal_bundle_verified.txt'
           $env:AZT_SIGNAL_BUNDLE_PROBE = $probe
-          & ".\\dist_trial_fixed\\AZT_Admin.exe" --verify-signal-bundle
-          if ($LASTEXITCODE -ne 0) { throw "Packaged signal engine import check failed ($LASTEXITCODE)." }
+          # GUI-subsystem EXEs return control to the shell immediately; use a
+          # Process handle to wait for the actual frozen Python worker's exit.
+          $exe = (Resolve-Path ".\\dist_trial_fixed\\AZT_Admin.exe").Path
+          $p = Start-Process -FilePath $exe -ArgumentList '--verify-signal-bundle' -PassThru
+          if (-not $p.WaitForExit(60000)) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "Frozen Admin import verification timed out."
+          }
+          if (Test-Path "$probe.error") { Get-Content "$probe.error" }
+          if ($p.ExitCode -ne 0) { throw "Packaged signal-engine import check failed ($($p.ExitCode))." }
           if (-not (Test-Path $probe)) { throw "Packaged signal-engine verification did not write success proof." }
           Get-Content $probe
       - name: Upload fixed Admin executable
