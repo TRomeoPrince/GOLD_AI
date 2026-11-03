@@ -154,9 +154,11 @@ def close_trade(df: pd.DataFrame, signal: StrategySignal, entry_bar: int, *,
     risk = entry - sl if signal.direction == "BUY" else sl - entry
     if risk <= 0:
         return None
-    # Keep 1.5R target from true next-open entry in both versions.
-    reward_r = float(signal.features.get("reward_r", 1.5))
-    target = entry + risk * reward_r * (1 if signal.direction == "BUY" else -1)
+    # Preserve the exact TP provided by each strategy; the real executor
+    # receives the strategy's fixed SL/TP and fills near the next opening price.
+    target = float(signal.take_profit)
+    if not (sl < entry < target if signal.direction == "BUY" else target < entry < sl):
+        return None
     end = min(len(df), entry_bar + hold)
     exit_index = end - 1
     price = float(df.at[exit_index, "close"])
