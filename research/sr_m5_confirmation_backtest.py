@@ -21,6 +21,8 @@ MODES = (
     "CONFIRMATION_ONLY",
     "DIRECTION_LOCK_ONLY",
     "CONFIRMATION_AND_LOCK",
+    "ENGULFING_ONLY",
+    "ENGULFING_AND_LOCK",
 )
 
 
@@ -240,9 +242,11 @@ def pairwise_backtest(df: pd.DataFrame, *, history_window=180, warmup=300,
     results = []
     summary_metadata = []
     for mode in MODES:
-        confirmed = mode.startswith("CONFIRMATION")
+        confirmed = mode.startswith("CONFIRMATION") or mode.startswith("ENGULFING")
         locked = mode.endswith("LOCK") or mode == "DIRECTION_LOCK_ONLY"
         candidates = histories[confirmed]
+        if mode.startswith("ENGULFING"):
+            candidates = [(k,s) for k,s in candidates if s.reason == "M5_CONFIRMED_ENGULFING"]
         accepted, rejected_opposites = select_trades(
             df, candidates, max_hold=max_hold, cost_price=cost_price,
             direction_lock=locked,
