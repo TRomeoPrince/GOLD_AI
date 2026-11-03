@@ -1,0 +1,54 @@
+name: Research Gold S-R confirmations and same-strategy direction lock
+on:
+  push:
+    branches:
+      - experiments/sr-m5-confirmation-direction-lock-20261103
+  workflow_dispatch:
+
+jobs:
+  safety-and-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install research-only dependencies
+        run: python -m pip install -q pandas numpy
+      - name: Verify M5 confirmations and position-direction lock
+        run: |
+          python -m py_compile research/sr_m5_confirmation_backtest.py
+          python -m unittest discover -s tests -p test_sr_confirmation_research.py -v
+      - name: Download historical public XAUUSD M5 OHLC data
+        run: |
+          python - <<'PY'
+          from urllib.request import urlretrieve
+          from pathlib import Path
+          import pandas as pd
+          dest=Path("data/independent_xauusd_m5.csv")
+          dest.parent.mkdir(parents=True,exist_ok=True)
+          url="https://raw.githubusercontent.com/Sai310421/xauusd-data/main/csv/XAUUSD/XAUUSD_M5_2026Q1Q2.csv"
+          urlretrieve(url,dest)
+          f=pd.read_csv(dest)
+          if "datetime" in f and "time" not in f: f=f.rename(columns={"datetime":"time"})
+          print("DATA ROWS",len(f),"PERIOD",f.time.iloc[0],f.time.iloc[-1],flush=True)
+          print("COLUMNS",list(f.columns),flush=True)
+          f.tail(12000).to_csv(dest,index=False)
+          PY
+      - name: Run production S-R vs confirmed M5 vs position-direction lock
+        run: |
+          python -m research.sr_m5_confirmation_backtest --csv data/independent_xauusd_m5.csv --limit 12000 --warmup 300 --history 180 --max-hold 60 --cost-price 0.50 --balance 2000 --risk-pct 1 --output Reports/sr_confirmations
+      - name: Holdout check over most recent 4000 bars
+        run: |
+          python -m research.sr_m5_confirmation_backtest --csv data/independent_xauusd_m5.csv --limit 4000 --warmup 300 --history 180 --max-hold 60 --cost-price 0.50 --balance 2000 --risk-pct 1 --output Reports/sr_confirmations_holdout
+      - name: Archive complete historical comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: AZT-SR-M5-Confirmation-Backtest
+          path: |
+            Reports/sr_confirmations/*.csv
+            Reports/sr_confirmations_holdout/*.csv
+          retention-days: 21
