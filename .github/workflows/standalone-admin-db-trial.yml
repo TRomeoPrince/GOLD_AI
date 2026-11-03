@@ -1,7 +1,7 @@
 name: AZT standalone Admin DB and UTC distributor-trial checks
 on:
   push:
-    branches: [fix/admin-standalone-db-utc-trial-20261030]
+    branches: [fix/frozen-signal-pandas-20261103]
   workflow_dispatch:
 jobs:
   validate-and-build-owner:
@@ -24,6 +24,15 @@ jobs:
           python -m unittest discover -s tests -p test_distributor_trial_http.py -v
       - name: Build standalone AZT Admin
         run: python -m PyInstaller --clean --noconfirm --distpath dist_trial_fixed --workpath build/trial_admin_pyi build/GOLD_AI_Admin.spec
+      - name: Verify signal-engine imports inside frozen Admin EXE (no MT5 orders)
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP 'azt_signal_bundle_verified.txt'
+          $env:AZT_SIGNAL_BUNDLE_PROBE = $probe
+          & ".\\dist_trial_fixed\\AZT_Admin.exe" --verify-signal-bundle
+          if ($LASTEXITCODE -ne 0) { throw "Packaged signal engine import check failed ($LASTEXITCODE)." }
+          if (-not (Test-Path $probe)) { throw "Packaged signal-engine verification did not write success proof." }
+          Get-Content $probe
       - name: Upload fixed Admin executable
         uses: actions/upload-artifact@v4
         with:
