@@ -331,6 +331,24 @@ class Services:
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--verify-signal-bundle":
+        # Import-only packaged-EXE check: no MT5 login, no market scan, no orders.
+        # It catches missing dependencies that pass source-level tests but fail
+        # inside a frozen signal_engine service subprocess.
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError("Signal bundle verification must run in the packaged EXE.")
+        import pandas as pd
+        import numpy as np
+        from server.signal_engine import MT5Client, StrategyRegistry
+        from strategies.m15_breakout import M15BreakoutStrategy
+        assert pd.DataFrame({"v": [1, 2, 3]})["v"].sum() == 6
+        assert np.asarray([1, 2, 3]).sum() == 6
+        assert StrategyRegistry(market="GOLD").models
+        assert M15BreakoutStrategy is not None and MT5Client is not None
+        proof = os.environ.get("AZT_SIGNAL_BUNDLE_PROBE", "").strip()
+        if proof:
+            Path(proof).write_text(f"signal_engine imports OK; pandas={pd.__version__}; numpy={np.__version__}\\n", encoding="utf-8")
+        return
     root = configure()
     if len(sys.argv) == 3 and sys.argv[1] == "--service":
         try:
