@@ -189,6 +189,29 @@ def close_trade(df: pd.DataFrame, signal: StrategySignal, entry_bar: int, *,
     }
 
 
+def select_trades(df: pd.DataFrame, candidates: list[tuple[int, StrategySignal]],
+                  *, max_hold: int, cost_price: float, direction_lock: bool):
+    """Position-aware direction filter using known entry & simulated exit times.
+
+    Opposite direction from the same strategy cannot enter while any older
+    opposite-position is still open. Same direction is permitted. The exit
+    bar counts as active because the intrabar order is unknown.
+    """
+    accepted = []
+    rejected = 0
+    for bar, signal in candidates:
+        if direction_lock and any(
+            x["exit_index"] >= bar and x["direction"] != signal.direction
+            for x in accepted
+        ):
+            rejected += 1
+            continue
+        trade = close_trade(df, signal, bar, hold=max_hold, roundtrip_price_cost=cost_price)
+        if trade is not None:
+            accepted.append(trade)
+    return accepted, rejected
+
+
 def pairwise_backtest(df: pd.DataFrame, *, history_window=180, warmup=300,
                       max_hold=60, cost_price=.5) -> tuple[pd.DataFrame, pd.DataFrame]:
     if warmup < 80 or max_hold < 1 or cost_price < 0:
@@ -217,18 +240,16 @@ def pairwise_backtest(df: pd.DataFrame, *, history_window=180, warmup=300,
     for mode in MODES:
         confirmed = mode.startswith("CONFIRMATION")
         locked = mode.endswith("LOCK") or mode == "DIRECTION_LOCK_ONLY"
-        accepted: list[dict] = []
-        rejected_opposites = 0
         candidates = histories[confirmed]
-        for k, sig in candidates:
-            if locked and any(t["exit_index"] >= k and t["direction"] != sig.direction for t in accepted):
-                rejected_opposites += 1
-                continue
-            outcome = close_trade(df, sig, k, hold=max_hold, roundtrip_price_cost=cost_price)
-            if outcome is not None:
-                outcome["mode"] = mode
-                outcome["setup_time"] = sig.setup_time
-                accepted.append(outcome)
+        accepted, rejected_opposites = select_trades(
+            df, candidates, max_hold=max_hold, cost_price=cost_price,
+            direction_lock=locked,
+        )
+        # Each accepted result already contains its entry bar. The signal
+        # timestamp comes from the last closed M5 candle, never future data.
+        for outcome in accepted:
+            outcome["mode"] = mode
+            outcome["setup_time"] = str(df.at[outcome["entry_index"] - 1, "time"])
         results.extend(accepted)
         summary_metadata.append({"mode": mode, "candidates": len(candidates),
                                  "rejected_opposite": rejected_opposites,
