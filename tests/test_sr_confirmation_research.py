@@ -110,7 +110,7 @@ class DirectionLockTests(unittest.TestCase):
 
     def test_all_modes_comparable_without_real_orders(self):
         t,c=pairwise_backtest(self.data,warmup=100,history_window=90,max_hold=20,cost_price=.5)
-        self.assertEqual(len(c),4)
+        self.assertEqual(len(c),6)
         summary=summarize(t,c,balance=2000,risk_pct=1.)
         self.assertEqual(set(summary["mode"]),set(c["mode"]))
         self.assertEqual(len(t),0)
