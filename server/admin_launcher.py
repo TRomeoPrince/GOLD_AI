@@ -28,16 +28,64 @@ def external_runtime(external):
             kernel.SetDllDirectoryW(str(sys._MEIPASS))
 
 
+def owner_home():
+    """Select persistent owner data independently of the executable location."""
+    explicit = os.getenv("GOLD_AI_HOME", "").strip()
+    override_db = os.getenv("GOLD_AI_DB_PATH", "").strip()
+    if explicit:
+        root = Path(explicit).expanduser().resolve()
+    elif override_db:
+        parent = Path(override_db).expanduser().resolve().parent
+        root = parent.parent if parent.name.lower() == "server" else parent
+    else:
+        checkout = Path(__file__).resolve().parents[1]
+        frozen = getattr(sys, "frozen", False)
+        exe = Path(sys.executable).resolve()
+        appdata = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "GOLD_AI"
+        candidates = ((
+            exe.parent.parent,
+            exe.parent,
+            Path.cwd(),
+            Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1",
+            appdata,
+        ) if frozen else (checkout, appdata))
+        root = next((folder for folder in candidates
+                     if (folder / "server" / "gold_ai_server.db").is_file()), None)
+        if root is None:
+            root = next((folder for folder in candidates
+                         if (folder / ".env").is_file() and (folder / "server").is_dir()), None)
+        if root is None:
+            root = appdata if frozen else checkout
+    return root.resolve()
+
+
 def configure():
-    root = Path(os.environ.get("GOLD_AI_HOME", Path(sys.executable).resolve().parent.parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent)).resolve()
+    root = owner_home()
+    root.mkdir(parents=True, exist_ok=True)
     from dotenv import load_dotenv
     load_dotenv(root / ".env", override=False)
-    os.environ.setdefault("GOLD_AI_DB_PATH", str(root / "server" / "gold_ai_server.db"))
-    os.environ.setdefault("GOLD_AI_STATE_DIR", str(root / "server"))
+    state = Path(os.environ.get("GOLD_AI_STATE_DIR") or root / "server").expanduser().resolve()
+    override_db = os.getenv("GOLD_AI_DB_PATH", "").strip()
+    db = Path(override_db).expanduser().resolve() if override_db else state / "gold_ai_server.db"
+    # Fail with a useful permissions error rather than sqlite3.OperationalError.
+    state.mkdir(parents=True, exist_ok=True)
+    db.parent.mkdir(parents=True, exist_ok=True)
+    os.environ["GOLD_AI_DB_PATH"] = str(db)
+    os.environ["GOLD_AI_STATE_DIR"] = str(state)
     os.environ.setdefault("GOLD_AI_PROJECT_ROOT", str(root))
     os.chdir(root)
     return root
 
+
+def telegram_source(root):
+    explicit = os.getenv("AZT_TELEGRAM_SOURCE_ROOT", "").strip()
+    if explicit:
+        return Path(explicit).expanduser().resolve()
+    exe = Path(sys.executable).resolve()
+    candidates = (root, exe.parent.parent, exe.parent) if getattr(sys, "frozen", False) else (root, Path(__file__).resolve().parents[1])
+    return next((path for path in candidates
+                 if (path / "server/admin_launcher.py").is_file()
+                 and (path / ".venv/Scripts/python.exe").is_file()), root)
 
 def worker(name):
     if getattr(sys, "frozen", False):
@@ -176,10 +224,13 @@ class Services:
                 self.errors[name] = "Not configured: set token in .env"
                 continue
             args = [sys.executable, "--service", name] if getattr(sys, "frozen", False) else [sys.executable, "-m", "server.admin_launcher", "--service", name]
-            external = name in {'telegram','notifications','maintenance'} and os.getenv('AZT_EXTERNAL_TELEGRAM','true').strip().lower() not in {'0','false','no','off'}
-            source_root=Path(os.getenv('AZT_TELEGRAM_SOURCE_ROOT',str(self.root))).resolve()
+            mode = os.getenv("AZT_EXTERNAL_TELEGRAM", "auto").strip().lower()
+            source_root = telegram_source(self.root)
+            python = source_root / ".venv/Scripts/python.exe"
+            external = (name in {"telegram", "notifications", "maintenance"}
+                        and mode not in {"0", "false", "no", "off"}
+                        and (mode != "auto" or python.is_file()))
             if external:
-                python=source_root/'.venv'/'Scripts'/'python.exe'
                 if not python.is_file():
                     self.errors[name]='External Telegram runtime missing: install owner requirements into .venv, then retry.'
                     continue
@@ -297,6 +348,24 @@ class Services:
 
 
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "--verify-signal-bundle":
+        # Import-only packaged-EXE check: no MT5 login, no market scan, no orders.
+        # It catches missing dependencies that pass source-level tests but fail
+        # inside a frozen signal_engine service subprocess.
+        if not getattr(sys, "frozen", False):
+            raise RuntimeError("Signal bundle verification must run in the packaged EXE.")
+        import pandas as pd
+        import numpy as np
+        from server.signal_engine import MT5Client, StrategyRegistry
+        from strategies.m15_breakout import M15BreakoutStrategy
+        assert pd.DataFrame({"v": [1, 2, 3]})["v"].sum() == 6
+        assert np.asarray([1, 2, 3]).sum() == 6
+        assert StrategyRegistry(market="GOLD").models
+        assert M15BreakoutStrategy is not None and MT5Client is not None
+        proof = os.environ.get("AZT_SIGNAL_BUNDLE_PROBE", "").strip()
+        if proof:
+            Path(proof).write_text(f"signal_engine imports OK; pandas={pd.__version__}; numpy={np.__version__}\\n", encoding="utf-8")
+        return
     root = configure()
     if len(sys.argv) == 3 and sys.argv[1] == "--service":
         try:

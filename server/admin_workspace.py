@@ -143,6 +143,9 @@ class AdminWorkspace:
         client = ttk.Frame(tabs, padding=10)
         tabs.add(client, text='Clients')
         self._actions(client, [('Add', self.add_client, 'Accent.TButton'), ('Edit', self.edit_client), ('Accounts', self.client_accounts), ('Activate', lambda: self.change_status('ACTIVE')), ('Pause', lambda: self.change_status('PAUSED')), ('Revoke', lambda: self.change_status('REVOKED')), ('Delete / Archive', self.archive_client, 'Danger.TButton'), ('Subscription', self.manage_subscription), ('Message', self.message_client), ('Copy Pairing', self.copy_pairing), ('Hosted MT5', self.show_hosted_requests), ('Use PC Client', self.use_pc_mode), ('Refresh', self.refresh)])
+        self._actions(client, [('Issue 30-Day Trial', self.issue_distributor_trial),
+                               ('Revoke Trial', self.revoke_distributor_trial),
+                               ('Convert Trial', self.convert_distributor_trial)])
         columns = [('name','Client',135), ('status','Status',85), ('subscription','Subscription',165), ('mode','Execution',100), ('mt5','MT5 Login',110), ('server','Server',150), ('telegram','Telegram',140), ('risk','Risk/Trade',90), ('open','Max Open',90), ('daily','Daily Loss',90), ('profit','Daily Target',100)]
         self.tree = ui.make_table(client, columns, height=12)
         self.tree.bind('<<TreeviewSelect>>', self.on_select)
@@ -162,10 +165,12 @@ class AdminWorkspace:
     def _build_trades(self, parent):
         self._title(parent, 'Trades', 'Stored UTC snapshots; display uses the timezone chosen in Settings. Broker SL/TP remain in place when trading is stopped.')
         self.trade_state = tk.StringVar(value='OPEN')
+        self.history_sync_var = tk.StringVar(value='History sync: waiting for MT5 account reports.')
         filters = ttk.Frame(parent)
         filters.pack(fill='x')
         ttk.Combobox(filters, values=['OPEN', 'CLOSED', 'ALL'], textvariable=self.trade_state, state='readonly', width=14).pack(side='left', padx=(0, 10))
         self._actions(parent, [('Refresh', self.refresh), ('Render selected PnL card', self.render_selected_card)])
+        ttk.Label(parent, textvariable=self.history_sync_var, wraplength=1200).pack(fill='x', pady=(0, 8))
         self.trades_tree = ui.make_table(parent, [('scope','Account / Client',160), ('ticket','Ticket',105), ('symbol','Symbol',100), ('direction','Side',70), ('strategy','Strategy',140), ('volume','Lots',70), ('entry','Entry',100), ('current','Current / Exit',110), ('sl','SL',95), ('tp','TP',95), ('pnl','PnL',100), ('time','Time',190), ('result','Result',120)], height=14)
         self.trade_state.trace_add('write', lambda *_: self.refresh())
         self.trade_rows = {}
@@ -276,8 +281,19 @@ class AdminWorkspace:
         self.refresh_notifications()
 
     def refresh_trades(self):
-        from .trade_telemetry import list_trades
+        from .trade_telemetry import account_snapshots, list_trades
         rows = list_trades(state=None if self.trade_state.get() == 'ALL' else self.trade_state.get())
+        accounts = account_snapshots()
+        if not accounts:
+            self.history_sync_var.set("History sync: no account snapshot received yet.")
+        else:
+            statuses = []
+            for account in accounts:
+                state = account.get("history_sync") or "UNKNOWN (older client)"
+                updated = account.get("history_last_success_utc")
+                date = self._time(updated) if updated else "never"
+                statuses.append(f"{account.get('account_key','?')}: {state}, last history refresh {date}")
+            self.history_sync_var.set("History sync | " + " | ".join(statuses))
         self.trade_rows = {str(i): row for i, row in enumerate(rows)}
         ui.set_rows(self.trades_tree, [(i, (row.get('account_key',''), row.get('ticket',''), row.get('symbol',''), row.get('direction',''), row.get('strategy') or '—', row.get('volume',''), row.get('entry',''), row.get('current_price', row.get('exit','')), row.get('sl',''), row.get('tp',''), row.get('pnl',row.get('profit',0)), self._time(row.get('closed_utc') or row.get('opened_utc') or row.get('observed_utc')), row.get('result',row.get('state','')))) for i,row in self.trade_rows.items()])
         open_rows = list_trades(state='OPEN', limit=6)

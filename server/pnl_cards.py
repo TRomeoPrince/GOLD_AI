@@ -82,19 +82,22 @@ def _fit_text(draw, text, width, size, *, bold=False, minimum=22):
 
 
 def _canvas(positive=True):
-    template=asset_path('IMAGES/PnL_CARDS/'+('PROFIT.jpg' if positive else 'LOSS.jpg'))
+    """Keep the original frame and use text-free AZT art under trade data."""
+    template = asset_path('IMAGES/PnL_CARDS/' + ('PROFIT.jpg' if positive else 'LOSS.jpg'))
     with Image.open(template) as original:
-        original=original.convert('RGB')
-        image=ImageOps.fit(original,(1080,1350),centering=(.5,.38))
-    # Remove every printed example number while retaining the supplied official
-    # star/landscape exterior. No template or source image is overwritten.
-    bounds=(64,278,1016,1230)
-    texture=image.crop((0,0,1080,265)).resize((952,952)).filter(ImageFilter.GaussianBlur(4))
-    texture=Image.blend(texture,Image.new('RGB',texture.size,'#08131f'),.88)
-    image.paste(texture,bounds)
-    draw=ImageDraw.Draw(image)
-    draw.rounded_rectangle(bounds,radius=32,outline='#e8bd67',width=3)
-    return image,draw,template
+        image = ImageOps.fit(original.convert('RGB'), (1080, 1350), centering=(.5, .38))
+    with Image.open(asset_path("IMAGES/BACKGROUND/BACKGROUND.jpg")) as background:
+        artwork = ImageOps.fit(background.convert("RGB"), image.size)
+    artwork = artwork.filter(ImageFilter.GaussianBlur(10))
+    artwork = Image.blend(artwork, Image.new("RGB", artwork.size, "#08131f"), .5)
+    # The information area is fully backed by text-free pixels. Feather only
+    # its perimeter so the template's sample P/L cannot show through.
+    mask = Image.new('L', image.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle((48, 278, 1032, 1230), radius=30, fill=255)
+    mask = mask.filter(ImageFilter.GaussianBlur(8))
+    image.paste(artwork, (0, 0), mask)
+    draw = ImageDraw.Draw(image)
+    return image, draw, template
 
 
 def _save(image,template,output=None):
@@ -219,7 +222,7 @@ def render_positions_cards(positions, *, display_timezone='UTC', output_dir=None
             line(710,'Waiting for an enabled MT5 worker snapshot.',27,'#aebfb9')
         for position_index,row in enumerate(page):
             top=595+position_index*260
-            draw.rounded_rectangle((94,top-12,988,top+235),radius=18,fill='#102630',outline='#40545b',width=1)
+            draw.rounded_rectangle((94,top-12,988,top+235),radius=18,outline='#d8bd7c',width=2)
             currency=str(row.get('currency') or 'Account currency')
             side=str(row.get('direction','')).upper()
             line(top,f"{side} {row.get('symbol','—')} · {_quantity(row.get('volume'))} lot",33,'#fa8586' if side=='SELL' else '#6ed6ac',True)

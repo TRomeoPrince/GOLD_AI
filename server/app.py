@@ -74,6 +74,21 @@ def authorize(req: AuthorizeRequest) -> AuthorizeResponse:
             azt_store.link_referral(client.id, req.referral_code)
     except ValueError as exc:
         return AuthorizeResponse(allowed=False, display_name=client.name, status="ACCOUNT_NOT_AUTHORIZED", message=str(exc))
+    # The customer's PC clock cannot start, extend, or reset this lease.
+    # First successful pairing records the first activation in the owner DB.
+    if account is not None and client.status == "ACTIVE":
+        from .trial_licenses import activate
+        from .store import connect
+        with connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            eligible = con.execute(
+                """SELECT 1 FROM clients c JOIN client_mt5_accounts a ON a.client_id=c.id
+                   WHERE c.id=? AND c.status='ACTIVE' AND c.archived_utc='' AND c.execution_mode='CLIENT_PC'
+                     AND a.id=? AND a.status='ACTIVE'""",
+                (client.id, account["id"]),
+            ).fetchone()
+            if eligible:
+                activate(con, client.id)
     summary = azt_store.subscription_summary(client.id)
     # Inactive clients retain read/payment access. Every executable route checks
     # the current subscription and account, independently of this token grant.

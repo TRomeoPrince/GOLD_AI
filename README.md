@@ -1,6 +1,10 @@
 # AGORA ZION TRADER (AZT)
 
-The current Admin build is `dist_telegram_style/AZT_Admin.exe`. See [TELEGRAM_UPDATE.md](TELEGRAM_UPDATE.md) for the Telegram presentation update and independent Telegram reload commands. [AZT_RELEASE.md](AZT_RELEASE.md) documents the underlying Admin/Client features and migration. The previous GOLD_AI environment names and stored data paths remain compatible.
+The November 4 Admin build is `dist_rebuild_20261104/AZT_Admin.exe`. It integrates standalone startup, the frozen signal engine dependency fix, broker-time history recovery, refreshed P&L cards and the optional 30-day distributor trial. The matching Client repository provides both the standard and trial EXEs.
+
+Admin uses an explicitly configured owner directory or database first. Otherwise it discovers an existing checkout database or uses `%LOCALAPPDATA%\GOLD_AI`. Keep the Admin EXE in its checkout to use the source Telegram workers. A standalone copy can run the bundled workers. From the owner checkout, run `& '.\.venv\Scripts\python.exe' -m server.telegram_admin reload` after editing Telegram source. Use `--root` when the running Admin uses a custom data directory.
+
+To issue a distributor trial, select a PC Client in Admin and choose **Issue 30-Day Trial**. The first valid MT5 pairing starts the 30 days on the owner server's UTC clock. **Convert Trial** lets the client use a separately approved paid subscription. See [TELEGRAM_UPDATE.md](TELEGRAM_UPDATE.md) for the Telegram presentation work and [AZT_RELEASE.md](AZT_RELEASE.md) for the underlying application features and migration.
 
 ## Research and legacy tooling
 

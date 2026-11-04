@@ -92,6 +92,7 @@ class ClientRecord:
 
 
 def connect() -> sqlite3.Connection:
+    Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(DB_PATH, timeout=10, factory=_ManagedConnection)
     con.row_factory = sqlite3.Row
     try:

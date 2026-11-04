@@ -257,6 +257,91 @@ class TelegramTelemetryTests(unittest.TestCase):
         self.assertEqual(stored['sl'], 4060.22)
         self.assertIsNone(stored['sl_pnl'])
 
+    def test_calibrated_history_ranges_include_new_deals_on_shifted_broker(self):
+        now = datetime.now(timezone.utc)
+        shift = 10800
+        entry = NS(ticket=501, position_id=700, symbol="XAUUSD.c", type=0, entry=0,
+                   volume=.03, price=4040., profit=0., commission=-.05, swap=0., fee=0.,
+                   time=now.timestamp() + shift - 1800, comment="AZT:MARKET_STRUCTURE")
+        exit_deal = NS(ticket=502, position_id=700, symbol="XAUUSD.c", type=1, entry=1,
+                       volume=.03, price=4050., profit=30., commission=-.05, swap=0., fee=0.,
+                       time=now.timestamp() + shift - 60, reason=5, comment="")
+        api = self.api()
+        api.positions_get.return_value = []
+        api.DEAL_TYPE_BUY, api.DEAL_TYPE_SELL = 0, 1
+        api.DEAL_ENTRY_IN, api.DEAL_ENTRY_OUT = 0, 1
+        api.DEAL_ENTRY_INOUT, api.DEAL_ENTRY_OUT_BY = 2, 3
+        api.DEAL_REASON_SL, api.DEAL_REASON_TP, api.DEAL_REASON_SO = 4, 5, 6
+        api.history_deals_get.side_effect = (
+            lambda start, end: [d for d in (entry, exit_deal) if start.timestamp() <= d.time <= end.timestamp()]
+        )
+        result = telemetry.capture_mt5(api, clock_offset_seconds=shift)
+        self.assertEqual(result["history_sync"], "OK")
+        self.assertEqual(len(result["trades"]), 1)
+        self.assertEqual(result["trades"][0]["position_id"], "700")
+        self.assertEqual(result["trades"][0]["strategy"], "MARKET_STRUCTURE")
+        close_utc = datetime.fromisoformat(result["trades"][0]["closed_utc"])
+        self.assertLess(abs((close_utc - (now - __import__("datetime").timedelta(seconds=60))).total_seconds()), 5)
+        self.assertEqual(api.history_deals_get.call_count, 1)
+        first_start, first_end = api.history_deals_get.call_args_list[0].args
+        self.assertGreater(first_end, now + __import__("datetime").timedelta(hours=2))
+        self.assertLess(first_start, now - __import__("datetime").timedelta(days=29))
+        api.order_send.assert_not_called()
+
+    def test_recent_history_fallback_when_wide_query_fails(self):
+        api = self.api()
+        api.history_deals_get.side_effect = [None, []]
+        snap = telemetry.capture_mt5(api, clock_offset_seconds=0)
+        self.assertEqual(snap["history_sync"], "DEGRADED")
+        self.assertEqual(snap["history_window_failures"], 1)
+        self.assertEqual(len(snap["positions"]), 1)
+        api.order_send.assert_not_called()
+
+    def test_history_unavailable_updates_open_positions_without_deleting_closed(self):
+        closed = dict(ticket="888", position_id="888", symbol="XAUUSD.c", direction="SELL",
+                      volume=.03, entry=4060., exit=4040., pnl=2., closed_utc=BASE)
+        first = self.snapshot(positions=[self.position()], trades=[closed])
+        first["history_sync"] = "OK"
+        self.ingest(first)
+        failed = self.snapshot(observed=LATER, positions=[], trades=[])
+        failed.update(history_sync="UNAVAILABLE", history_window_failures=2)
+        result = self.ingest(failed)
+        self.assertTrue(result["accepted"])
+        self.assertFalse(telemetry.list_trades(state="OPEN", database=self.database))
+        saved_closed = telemetry.list_trades(state="CLOSED", database=self.database)
+        self.assertEqual(len(saved_closed), 1)
+        self.assertEqual(saved_closed[0]["ticket"], "888")
+        a = telemetry.overview(database=self.database)["accounts"][0]
+        self.assertEqual(a["history_sync"], "UNAVAILABLE")
+        self.assertEqual(a["history_last_success_utc"], BASE)
+        self.assertEqual(a["history_last_full_utc"], BASE)
+
+    def test_partial_history_cannot_overwrite_confirmed_close(self):
+        close = dict(ticket="888", position_id="888", symbol="XAUUSD.c",
+                     direction="SELL", pnl=2.00, closed_utc=BASE)
+        self.ingest(dict(self.snapshot(trades=[close]), history_sync="OK"))
+        partial = dict(self.snapshot(observed=LATER, trades=[dict(close, pnl=2.50)]),
+                       history_sync="DEGRADED", history_window_failures=1)
+        self.ingest(partial)
+        stored, = telemetry.list_trades(state="CLOSED", database=self.database)
+        self.assertEqual(stored["pnl"], 2.00)
+
+    def test_recent_only_close_alert_waits_for_full_history(self):
+        self.ingest(dict(self.snapshot(), history_sync="OK"))
+        close = dict(ticket="889", position_id="889", symbol="XAUUSD.c",
+                     direction="SELL", pnl=2.50, closed_utc=LATER)
+        partial = dict(self.snapshot(observed=LATER, trades=[close]),
+                       history_sync="DEGRADED", history_window_failures=1)
+        self.assertEqual(self.ingest(partial)["new_closed"], [])
+        stored, = telemetry.list_trades(state="CLOSED", database=self.database)
+        self.assertTrue(stored["history_partial"])
+        complete = dict(self.snapshot(observed="2026-10-28T00:02:00+00:00",
+                                      trades=[dict(close, pnl=2.00)]), history_sync="OK")
+        reconciled, = self.ingest(complete)["new_closed"]
+        self.assertEqual(reconciled["pnl"], 2.00)
+        complete["observed_utc"] = "2026-10-28T00:03:00+00:00"
+        self.assertEqual(self.ingest(complete)["new_closed"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

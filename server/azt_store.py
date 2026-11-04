@@ -95,6 +95,15 @@ def migrate(con):
     CREATE TABLE IF NOT EXISTS account_instruction_deliveries(instruction_id INTEGER NOT NULL,account_id INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'PENDING',ack_message TEXT NOT NULL DEFAULT '',acked_utc TEXT NOT NULL DEFAULT '',dispatched_utc TEXT NOT NULL DEFAULT '',PRIMARY KEY(instruction_id,account_id));
     CREATE TABLE IF NOT EXISTS azt_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,client_id INTEGER NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,created_utc TEXT NOT NULL,read_utc TEXT NOT NULL DEFAULT '',event_key TEXT UNIQUE);
     CREATE TABLE IF NOT EXISTS azt_events(id INTEGER PRIMARY KEY AUTOINCREMENT,kind TEXT NOT NULL,message TEXT NOT NULL,client_id INTEGER,created_utc TEXT NOT NULL,event_key TEXT UNIQUE);
+    CREATE TABLE IF NOT EXISTS azt_distributor_trials(
+        client_id INTEGER PRIMARY KEY,
+        days INTEGER NOT NULL DEFAULT 30,
+        created_utc TEXT NOT NULL,
+        activated_utc TEXT NOT NULL DEFAULT '',
+        expires_utc TEXT NOT NULL DEFAULT '',
+        revoked_utc TEXT NOT NULL DEFAULT '',
+        converted_utc TEXT NOT NULL DEFAULT '',
+        FOREIGN KEY(client_id) REFERENCES clients(id));
     CREATE TABLE IF NOT EXISTS referral_codes(client_id INTEGER PRIMARY KEY,code TEXT NOT NULL UNIQUE);
     CREATE TABLE IF NOT EXISTS referral_links(client_id INTEGER PRIMARY KEY,referrer_id INTEGER NOT NULL,created_utc TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS referral_rewards(id INTEGER PRIMARY KEY AUTOINCREMENT,payment_id INTEGER NOT NULL UNIQUE,referrer_id INTEGER NOT NULL,client_id INTEGER NOT NULL,amount REAL NOT NULL,currency TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'PENDING',created_utc TEXT NOT NULL,paid_utc TEXT NOT NULL DEFAULT '');
@@ -194,10 +203,9 @@ def _ensure_subscription(con, client_id):
     return dict(row)
 
 
-def _subscription_summary(con, client_id, now=None):
+def _base_subscription_summary(con, client_id, now):
     client = _client_row(con, client_id)
     sub = _ensure_subscription(con, client_id)
-    now = now or utc_now()
     remaining = None
     effective = str(sub["status"]).upper()
     if sub["expires_utc"]:
@@ -212,7 +220,17 @@ def _subscription_summary(con, client_id, now=None):
     if client["status"] != "ACTIVE":
         effective = str(client["status"])
     allowed = client["status"] == "ACTIVE" and sub["status"] in {"ACTIVE", "TRIAL", "EXPIRING SOON"} and effective not in {"EXPIRED", "INVALID_EXPIRY"}
-    return {"subscription": sub, "allowed": allowed, "effective_status": effective, "remaining_seconds": remaining, "display_timezone": client["display_timezone"], "max_mt5_accounts": int(client["max_mt5_accounts"] or sub["max_mt5_accounts"] or 1), "reason": "OK" if allowed else "SUBSCRIPTION_" + effective.replace(" ", "_")}
+    return {"subscription": sub, "allowed": allowed, "effective_status": effective,
+             "remaining_seconds": remaining, "display_timezone": client["display_timezone"],
+             "max_mt5_accounts": int(client["max_mt5_accounts"] or sub["max_mt5_accounts"] or 1),
+             "reason": "OK" if allowed else "SUBSCRIPTION_" + effective.replace(" ", "_")}
+
+
+def _subscription_summary(con, client_id, now=None):
+    from .trial_licenses import apply_access
+
+    current = now or utc_now()
+    return apply_access(con, client_id, _base_subscription_summary(con, client_id, current), now=current)
 
 
 def subscription_summary(client_id):
@@ -745,7 +763,7 @@ def redeem_promo(client_id, code):
         previous = con.execute("SELECT * FROM promo_redemptions WHERE promo_id=? AND client_id=?", (promo["id"], client_id)).fetchone()
         if previous and promo["one_use_per_user"]:
             raise ValueError("This client has already redeemed that promo code.")
-        current = _subscription_summary(con, client_id)
+        current = _base_subscription_summary(con, client_id, utc_now())
         # Repeat redemptions may extend time only when explicitly configured;
         # they never multiply the granted account allowance.
         allowance = max(current["subscription"]["max_mt5_accounts"], promo["max_mt5_accounts"]) if current["allowed"] else promo["max_mt5_accounts"]
@@ -788,14 +806,18 @@ def maintenance_tick():
         except (OSError, ValueError, ImportError):
             pass
         for client in clients:
-            sub = _ensure_subscription(con, client["id"])
+            access = _subscription_summary(con, client["id"], now=now)
+            if access["effective_status"] == "PAYMENT_REQUIRED":
+                continue
+            sub = access["subscription"]
+            distributor_trial = access.get("distributor_trial", False)
             if not sub["expires_utc"]:
                 continue
             try:
                 remaining = (parse_utc(sub["expires_utc"]) - now).total_seconds()
             except ValueError:
                 continue
-            if remaining <= 0 and sub["status"] not in {"EXPIRED", "CANCELLED", "REVOKED"}:
+            if not distributor_trial and remaining <= 0 and sub["status"] not in {"EXPIRED", "CANCELLED", "REVOKED"}:
                 con.execute("UPDATE subscriptions SET status='EXPIRED',updated_utc=? WHERE client_id=?", (utc_iso(), client["id"]))
                 _event(con, "SUBSCRIPTION_EXPIRED", "Subscription expired; new entries blocked. Existing positions remain at the broker.", client["id"], f"expiry:{client['id']}:{sub['expires_utc']}")
             if sub["status"] not in {"ACTIVE", "TRIAL", "EXPIRED", "EXPIRING SOON"}:
@@ -810,9 +832,13 @@ def maintenance_tick():
                 key = f"subscription-reminder:{client['id']}:{sub['expires_utc']}:{days}"
                 if con.execute("SELECT 1 FROM azt_messages WHERE event_key=?", (key,)).fetchone():
                     continue
-                title = "Subscription expired" if days == 0 else "Subscription expiring soon"
                 displayed_expiry = parse_utc(sub["expires_utc"]).astimezone(ZoneInfo(client["display_timezone"])).isoformat()
-                body = f"Your {sub['plan_code']} access expires at {displayed_expiry} ({client['display_timezone']}). " + ("New automated entries are blocked until renewal approval." if days == 0 else "Renew to keep automated trading available.")
+                if distributor_trial:
+                    title = "30-day trial expired" if days == 0 else "30-day trial expiring soon"
+                    body = f"Your distributor trial expires at {displayed_expiry}. Contact Admin to arrange paid access."
+                else:
+                    title = "Subscription expired" if days == 0 else "Subscription expiring soon"
+                    body = f"Your {sub['plan_code']} access expires at {displayed_expiry} ({client['display_timezone']}). " + ("New automated entries are blocked until renewal approval." if days == 0 else "Renew to keep automated trading available.")
                 _message(con, client["id"], title, body, key)
                 queued.append((client["id"], title, body, key))
         held = con.execute("SELECT d.instruction_id,d.account_id,d.dispatched_utc,i.client_id,c.name,c.archived_utc,a.login,a.server FROM account_instruction_deliveries d JOIN instructions i ON i.id=d.instruction_id JOIN clients c ON c.id=i.client_id JOIN client_mt5_accounts a ON a.id=d.account_id AND a.client_id=i.client_id WHERE d.status='DISPATCHED'").fetchall()

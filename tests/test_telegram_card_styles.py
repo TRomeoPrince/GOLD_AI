@@ -76,6 +76,21 @@ class TelegramCardStyleTests(unittest.TestCase):
                     cards.render_trade_card(self.sample(pnl=1),output=original)
         self.assertEqual(hashes,[hashlib.sha256(path.read_bytes()).digest() for path in originals])
 
+    def test_card_preserves_artwork_without_template_demo_values(self):
+        # Different preprinted figures must never survive in the data area.
+        from PIL import ImageOps, ImageStat
+        data_areas = []
+        for positive, name in ((True, 'PROFIT'), (False, 'LOSS')):
+            path = cards.asset_path('IMAGES/PnL_CARDS/' + name + '.jpg')
+            with Image.open(path) as original:
+                reference = ImageOps.fit(original.convert('RGB'), (1080, 1350),
+                                         centering=(.5, .38))
+            rendered, _, _ = cards._canvas(positive)
+            data_areas.append(rendered.crop((120, 350, 960, 1100)))
+            self.assertEqual(reference.getpixel((20, 80)), rendered.getpixel((20, 80)))
+        self.assertEqual(data_areas[0].tobytes(), data_areas[1].tobytes())
+        self.assertGreater(ImageStat.Stat(data_areas[0].convert("L")).stddev[0], 10)
+
     def test_positions_unknown_total_and_stale_marker_remain_truthful(self):
         captured=[]
         original=cards._fit_text

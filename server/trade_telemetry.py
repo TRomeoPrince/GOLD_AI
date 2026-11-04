@@ -234,9 +234,23 @@ def ingest_snapshot(client_id, account_key, snapshot, *, database=None):
     new_closed, new_open, new_stop_updates = [], [], []
     with _connection(database) as con:
         con.execute("BEGIN IMMEDIATE")
-        previous = con.execute("SELECT observed_utc,first_observed_utc FROM azt_account_snapshots WHERE scope=? AND account_key=?", (scope, key)).fetchone()
+        previous = con.execute("SELECT observed_utc,first_observed_utc,account_json FROM azt_account_snapshots WHERE scope=? AND account_key=?", (scope, key)).fetchone()
         if previous and observed <= previous["observed_utc"]:
             return {"accepted": False, "new_closed": [], "new_open": [], "new_stop_updates": []}
+        prior_summary = json.loads(previous["account_json"]) if previous else {}
+        history_sync = snapshot.get("history_sync", "UNKNOWN")
+        if not isinstance(history_sync, str) or history_sync not in {"OK", "DEGRADED", "UNAVAILABLE", "UNKNOWN"}:
+            raise ValueError("Invalid history synchronization status.")
+        summary["history_sync"] = history_sync
+        failures = snapshot.get("history_window_failures", 0)
+        if type(failures) is not int or not 0 <= failures <= 2:
+            raise ValueError("Invalid history window failure count.")
+        summary["history_window_failures"] = failures
+        if history_sync == "UNAVAILABLE":
+            trades = []
+        # A failed poll must not overwrite the last verified history refresh.
+        summary["history_last_success_utc"] = observed if history_sync in {"OK", "DEGRADED"} else prior_summary.get("history_last_success_utc")
+        summary["history_last_full_utc"] = observed if history_sync == "OK" else prior_summary.get("history_last_full_utc")
         previous_open = {row["ticket"]: json.loads(row["payload_json"]) for row in con.execute("SELECT ticket,payload_json FROM azt_trades WHERE scope=? AND account_key=? AND kind='OPEN'", (scope, key))}
         execution_details = {row["ticket"]: json.loads(row["details_json"]) for row in con.execute("SELECT ticket,details_json FROM azt_execution_details WHERE scope=? AND account_key=?", (scope, key))}
         for row in positions + trades:
@@ -251,15 +265,21 @@ def ingest_snapshot(client_id, account_key, snapshot, *, database=None):
                 row['entry_basis'] = details.get('entry_basis','')
         baseline = (previous["first_observed_utc"] or previous["observed_utc"]) if previous else observed
         for row in trades:
+            if history_sync == "DEGRADED":
+                row["history_partial"] = True
             prior = previous_open.get(row["position_id"], {})
             for name in ("entry", "sl", "tp", "risk_pct", "opened_utc"):
                 if row.get(name) is None and prior.get(name) is not None:
                     row[name] = prior[name]
             if row["strategy"] == "—" and prior.get("strategy"):
                 row["strategy"] = prior["strategy"]
-            exists = con.execute("SELECT 1 FROM azt_trades WHERE scope=? AND account_key=? AND kind='CLOSED' AND ticket=?", (scope, key, row["ticket"])).fetchone()
+            existing = con.execute(
+                """SELECT json_extract(payload_json,'$.history_partial') FROM azt_trades
+                   WHERE scope=? AND account_key=? AND kind='CLOSED' AND ticket=?""",
+                (scope, key, row["ticket"]),
+            ).fetchone()
             # First snapshot is history synchronization, not a burst of old alerts.
-            if previous and not exists and row["closed_utc"] >= baseline:
+            if previous and history_sync != "DEGRADED" and (existing is None or existing[0]) and row["closed_utc"] >= baseline:
                 new_closed.append(row)
         for row in positions:
             if previous and row["ticket"] not in previous_open and row.get("opened_utc") and row["opened_utc"] >= baseline:
@@ -271,8 +291,12 @@ def ingest_snapshot(client_id, account_key, snapshot, *, database=None):
         con.execute("INSERT INTO azt_account_snapshots(scope,account_key,observed_utc,account_json,first_observed_utc) VALUES(?,?,?,?,?) ON CONFLICT(scope,account_key) DO UPDATE SET observed_utc=excluded.observed_utc,account_json=excluded.account_json", (scope, key, observed, json.dumps(summary, allow_nan=False), baseline))
         con.execute("DELETE FROM azt_trades WHERE scope=? AND account_key=? AND kind='OPEN'", (scope, key))
         for kind, rows in (("OPEN", positions), ("CLOSED", trades)):
+            # A recent-only query may miss opening deals and their costs. Keep
+            # stored closes intact until a complete poll can reconcile them.
+            on_conflict = ("DO NOTHING" if kind == "CLOSED" and history_sync == "DEGRADED"
+                           else "DO UPDATE SET payload_json=excluded.payload_json,observed_utc=excluded.observed_utc")
             for row in rows:
-                con.execute("INSERT INTO azt_trades VALUES(?,?,?,?,?,?) ON CONFLICT(scope,account_key,kind,ticket) DO UPDATE SET payload_json=excluded.payload_json,observed_utc=excluded.observed_utc", (scope, key, kind, row["ticket"], json.dumps(row, allow_nan=False), observed))
+                con.execute("INSERT INTO azt_trades VALUES(?,?,?,?,?,?) ON CONFLICT(scope,account_key,kind,ticket) " + on_conflict, (scope, key, kind, row["ticket"], json.dumps(row, allow_nan=False), observed))
     for row in new_open + new_closed:
         row.update(account_key=key, currency=summary.get("currency") or "UNKNOWN", observed_utc=observed, client_id=client_id)
     return {"accepted": True, "new_closed": new_closed, "new_open": new_open, "new_stop_updates": new_stop_updates}
@@ -328,10 +352,14 @@ def daily_journal(client_id=None, date=None, timezone="UTC", *, account_key=None
             "strategies_used": sorted({row["strategy"] for row in rows if row["strategy"] != "—"}), "trades": rows}
 
 
-def overview(client_id=None, timezone="UTC", *, database=None):
+def account_snapshots(client_id=None, *, database=None):
     with _connection(database) as con:
         rows = con.execute("SELECT * FROM azt_account_snapshots" + (" WHERE scope=?" if client_id is not None else ""), (_scope(client_id),) if client_id is not None else ()).fetchall()
-    accounts = [dict(json.loads(row["account_json"]), account_key=row["account_key"], observed_utc=row["observed_utc"]) for row in rows]
+    return [dict(json.loads(row["account_json"]), account_key=row["account_key"], observed_utc=row["observed_utc"]) for row in rows]
+
+
+def overview(client_id=None, timezone="UTC", *, database=None):
+    accounts = account_snapshots(client_id, database=database)
     positions = list_trades(client_id, state="OPEN", database=database)
     journal = daily_journal(client_id, timezone=timezone, database=database)
     floating_by_currency = {}
@@ -357,9 +385,36 @@ def capture_mt5(api, *, clock_offset_seconds=0, lookback_days=30):
         raise RuntimeError("MT5 telemetry requires a real verified account identity.")
     now = datetime.now(utc_timezone.utc)
     positions = api.positions_get()
-    deals = api.history_deals_get(now - timedelta(days=max(1, min(365, lookback_days))), now)
-    if positions is None or deals is None:
-        raise RuntimeError("MT5 positions/history unavailable; last snapshot retained.")
+    if positions is None:
+        raise RuntimeError("MT5 open positions unavailable; last snapshot retained.")
+
+    # MT5 broker feeds may encode their wall-clock time in raw epoch seconds.
+    # The timestamp() function below subtracts the calibrated feed offset.
+    # The HISTORY QUERY needs the same offset, or a deal closed now can lie
+    # outside the request's UTC end and today's results appear to be missing.
+    if not isinstance(clock_offset_seconds, (int, float)) or not math.isfinite(clock_offset_seconds) or abs(clock_offset_seconds) > 14 * 3600:
+        raise ValueError("Invalid calibrated MT5 broker offset.")
+    feed_now = now + timedelta(seconds=clock_offset_seconds)
+    periods = (
+        (feed_now - timedelta(days=max(1, min(365, lookback_days))), feed_now + timedelta(minutes=2)),
+        (feed_now - timedelta(days=2), feed_now + timedelta(minutes=2)),
+    )
+    deals = ()
+    failed_windows = 0
+    for start, end in periods:
+        try:
+            result = api.history_deals_get(start, end)
+        except (RuntimeError, OSError, ValueError):
+            result = None
+        if result is None:
+            failed_windows += 1
+            continue
+        deals = result
+        break
+    history_status = "OK" if failed_windows == 0 else "DEGRADED" if failed_windows < len(periods) else "UNAVAILABLE"
+    # Even when both history ranges fail, open positions must be refreshed;
+    # existing closed deals remain in the DB and will be reconciled later.
+
     def timestamp(item, name="time"):
         value = float(getattr(item, name, 0) or 0)
         return utc_iso(value - clock_offset_seconds) if value > 0 else None
@@ -417,4 +472,5 @@ def capture_mt5(api, *, clock_offset_seconds=0, lookback_days=30):
                            "notes": "Partial close; remaining volume was retained at this exit." if partial else "",
                            "close_reason": {int(getattr(api, "DEAL_REASON_SL", 4)): "SL HIT", int(getattr(api, "DEAL_REASON_TP", 5)): "TP HIT", int(getattr(api, "DEAL_REASON_SO", 6)): "STOP OUT"}.get(int(getattr(last, "reason", -1)), "")})
     summary = {name: getattr(account, name, None) for name in ("login", "server", "currency", "balance", "equity", "margin", "margin_free")}
-    return {"observed_utc": now.isoformat(), "account": summary, "positions": open_rows, "trades": closed}
+    return {"observed_utc": now.isoformat(), "account": summary, "positions": open_rows, "trades": closed,
+            "history_sync": history_status, "history_window_failures": failed_windows}
