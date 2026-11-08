@@ -65,6 +65,21 @@ class TypedTelegramEventTests(unittest.TestCase):
             delivery.send_queued(bot,row,database=self.database)
         bot.send_photo.assert_called_once_with(111,'preview.png','SL 10 → 11',parse_mode='HTML')
 
+    def test_renderer_failure_preserves_confirmed_text_and_sends_once(self):
+        row={'chat_id':111,'event_json':json.dumps({'kind':'SL_UPDATED','trade':{'old_sl':10,'new_sl':11}})}
+        with patch('server.workspace_settings.load_settings',return_value={'display_timezone':'UTC'}),patch('server.telegram_presentation.format_stop_update',return_value='SL 10 → 11'),patch('server.pnl_cards.render_stop_update_card',side_effect=FileNotFoundError('private path')):
+            bot=Mock()
+            delivery.send_queued(bot,row,database=self.database)
+        bot.send_message.assert_called_once_with(111,'SL 10 → 11',parse_mode='HTML')
+        bot.send_photo.assert_not_called()
+
+    def test_runtime_alert_does_not_depend_on_workspace_timezone(self):
+        row={'chat_id':111,'event_json':json.dumps({'kind':'RUNTIME','state':'READY','message':'Ready'})}
+        with patch('server.workspace_settings.load_settings',side_effect=ValueError('invalid settings')):
+            bot=Mock()
+            delivery.send_queued(bot,row,database=self.database)
+        bot.send_message.assert_called_once()
+
 
 if __name__=='__main__':
     unittest.main()

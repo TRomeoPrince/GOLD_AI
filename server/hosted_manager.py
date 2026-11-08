@@ -4,8 +4,8 @@ import argparse
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
+from .owner_paths import project_root as resolve_project_root, service_home
 
 from .store import (
     hosted_account_for_client,
@@ -24,13 +24,7 @@ def configure_supervisor(services):
 
 
 def project_root() -> Path:
-    override = os.getenv("GOLD_AI_PROJECT_ROOT", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-    candidate = Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1"
-    if candidate.exists():
-        return candidate
-    return Path(__file__).resolve().parent.parent
+    return resolve_project_root(service_home())
 
 
 def hosted_root() -> Path:

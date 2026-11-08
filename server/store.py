@@ -3,36 +3,18 @@ from __future__ import annotations
 import os
 import secrets
 import sqlite3
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
 from pathlib import Path
 from typing import Optional
 
 from .credential_vault import encrypt_secret
+from .owner_paths import database_path, service_home
 
 
 def _resolve_db_path() -> Path:
-    override = os.getenv("GOLD_AI_DB_PATH", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-
-    if getattr(sys, "frozen", False):
-        exe = Path(sys.executable).resolve()
-        candidates = [
-            exe.parent.parent / "server" / "gold_ai_server.db",
-            Path.cwd() / "server" / "gold_ai_server.db",
-            Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1" / "server" / "gold_ai_server.db",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-
-        fallback_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "GOLD_AI" / "server"
-        fallback_dir.mkdir(parents=True, exist_ok=True)
-        return fallback_dir / "gold_ai_server.db"
-
-    return Path(__file__).resolve().parent / "gold_ai_server.db"
+    return database_path(service_home())
 
 
 DB_PATH = _resolve_db_path()
@@ -324,7 +306,7 @@ def set_client_risk(
         raise ValueError("Max overall open risk must be between 5% and 40%.")
     if not 2.0 <= max_daily_loss_pct <= 10.0:
         raise ValueError("Max daily loss must be between 2% and 10%.")
-    if daily_profit_target_pct <= 0:
+    if not isfinite(daily_profit_target_pct) or daily_profit_target_pct <= 0:
         raise ValueError("Daily profit target must be greater than 0%.")
 
     with connect() as con:
@@ -355,6 +337,19 @@ def set_client_risk(
     return _client(row)
 
 
+def _risk_flag(value, field: str) -> bool:
+    if str(value) not in {"0", "1", "False", "True"}:
+        raise ValueError(f"Invalid risk-policy switch: {field}.")
+    return str(value) in {"1", "True"}
+
+
+def _risk_cap(value, field: str, minimum: float, maximum: float = float("inf")) -> float:
+    number = float(value)
+    if not isfinite(number) or number <= 0 or not minimum <= number <= maximum:
+        raise ValueError(f"Invalid risk-policy value: {field}.")
+    return number
+
+
 def get_global_risk_policy() -> dict:
     with connect() as con:
         rows = con.execute(
@@ -362,14 +357,14 @@ def get_global_risk_policy() -> dict:
         ).fetchall()
     values = {str(row["key"]): str(row["value"]) for row in rows}
     return {
-        "risk_per_trade_enabled": values.get("global_risk_per_trade_enabled", "1") == "1",
-        "risk_per_trade_pct": float(values.get("global_risk_per_trade_pct", "2.0")),
-        "max_open_risk_enabled": values.get("global_max_open_risk_enabled", "1") == "1",
-        "max_open_risk_pct": float(values.get("global_max_open_risk_pct", "40.0")),
-        "max_daily_loss_enabled": values.get("global_max_daily_loss_enabled", "1") == "1",
-        "max_daily_loss_pct": float(values.get("global_max_daily_loss_pct", "10.0")),
-        "daily_profit_target_enabled": values.get("global_daily_profit_target_enabled", "0") == "1",
-        "daily_profit_target_pct": float(values.get("global_daily_profit_target_pct", "3.0")),
+        "risk_per_trade_enabled": _risk_flag(values.get("global_risk_per_trade_enabled", "1"), "global trade risk"),
+        "risk_per_trade_pct": _risk_cap(values.get("global_risk_per_trade_pct", "2.0"), "global trade risk", .1, 2),
+        "max_open_risk_enabled": _risk_flag(values.get("global_max_open_risk_enabled", "1"), "global open risk"),
+        "max_open_risk_pct": _risk_cap(values.get("global_max_open_risk_pct", "40.0"), "global open risk", 5, 40),
+        "max_daily_loss_enabled": _risk_flag(values.get("global_max_daily_loss_enabled", "1"), "global daily loss"),
+        "max_daily_loss_pct": _risk_cap(values.get("global_max_daily_loss_pct", "10.0"), "global daily loss", 2, 10),
+        "daily_profit_target_enabled": _risk_flag(values.get("global_daily_profit_target_enabled", "0"), "global profit target"),
+        "daily_profit_target_pct": _risk_cap(values.get("global_daily_profit_target_pct", "3.0"), "global profit target", 0),
     }
 
 
@@ -395,7 +390,7 @@ def set_global_risk_policy(
         raise ValueError("Global max open risk must be between 5% and 40%.")
     if not 2.0 <= max_daily_loss_pct <= 10.0:
         raise ValueError("Global daily loss must be between 2% and 10%.")
-    if daily_profit_target_pct <= 0:
+    if not isfinite(daily_profit_target_pct) or daily_profit_target_pct <= 0:
         raise ValueError("Global daily profit target must be greater than 0%.")
 
     settings = {
@@ -424,22 +419,22 @@ def effective_risk_policy(client: ClientRecord) -> dict:
     risk_candidates = [2.0]
     if global_policy["risk_per_trade_enabled"]:
         risk_candidates.append(float(global_policy["risk_per_trade_pct"]))
-    if bool(client.risk_per_trade_enabled):
-        risk_candidates.append(float(client.risk_per_trade_pct))
+    if _risk_flag(client.risk_per_trade_enabled, "trade risk"):
+        risk_candidates.append(_risk_cap(client.risk_per_trade_pct, "trade risk", .1, 2))
 
     open_candidates = [40.0]
     if global_policy["max_open_risk_enabled"]:
         open_candidates.append(float(global_policy["max_open_risk_pct"]))
-    if bool(client.max_open_risk_enabled):
-        open_candidates.append(float(client.max_open_risk_pct))
+    if _risk_flag(client.max_open_risk_enabled, "open risk"):
+        open_candidates.append(_risk_cap(client.max_open_risk_pct, "open risk", 5, 40))
 
     loss_candidates = [10.0]
     if global_policy["max_daily_loss_enabled"]:
         loss_candidates.append(float(global_policy["max_daily_loss_pct"]))
-    if bool(client.max_daily_loss_enabled):
-        loss_candidates.append(float(client.max_daily_loss_pct))
+    if _risk_flag(client.max_daily_loss_enabled, "daily loss"):
+        loss_candidates.append(_risk_cap(client.max_daily_loss_pct, "daily loss", 2, 10))
 
-    if bool(client.daily_profit_target_enabled):
+    if _risk_flag(client.daily_profit_target_enabled, "profit target"):
         profit_enabled = True
         profit_target = float(client.daily_profit_target_pct)
         profit_source = "CLIENT"
@@ -451,6 +446,9 @@ def effective_risk_policy(client: ClientRecord) -> dict:
         profit_enabled = False
         profit_target = 0.0
         profit_source = "OFF"
+
+    if profit_enabled and (not isfinite(profit_target) or profit_target <= 0):
+        raise ValueError("Invalid risk-policy value: profit target.")
 
     return {
         "risk_per_trade_pct": min(risk_candidates),

@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import unittest
 import urllib.error
@@ -122,12 +123,46 @@ class TelegramWorkerTests(unittest.TestCase):
     def test_polling_still_dispatches_messages_and_advances_offset(self):
         message = {"chat": {"id": 1}, "text": "/help"}
         def poll(*_args, **_kwargs):
+            return {"ok": True, "result": [{"update_id": 44, "message": message}]}
+        with patch.object(self.bot, "_api", side_effect=poll), patch.object(self.bot, "_handle", side_effect=lambda _: self.bot.stop()) as handle:
+            self.bot.run_forever()
+        handle.assert_called_once_with(message)
+        self.assertEqual(self.bot._offset, 45)
+
+    def test_shutdown_leaves_commands_returned_by_inflight_poll_unacknowledged(self):
+        message = {"chat": {"id": 1}, "text": "/link SIMULATED"}
+        def poll(*_args, **_kwargs):
             self.bot.stop()
             return {"ok": True, "result": [{"update_id": 44, "message": message}]}
         with patch.object(self.bot, "_api", side_effect=poll), patch.object(self.bot, "_handle") as handle:
             self.bot.run_forever()
-        handle.assert_called_once_with(message)
-        self.assertEqual(self.bot._offset, 45)
+        handle.assert_not_called()
+        self.assertEqual(self.bot._offset, 0)
+
+    def test_polling_resumes_after_a_transport_timeout(self):
+        def stop_after_success(*_args, **_kwargs):
+            self.bot.stop()
+            return {"ok": True, "result": []}
+        poll = Mock(side_effect=[TimeoutError("private URL"), None])
+        def response(*args, **kwargs):
+            result = poll(*args, **kwargs)
+            return result or stop_after_success()
+        with patch.object(self.bot, "_api", side_effect=response), patch.object(self.bot._stop, "wait", return_value=False):
+            self.bot.run_forever()
+        self.assertEqual(self.states(), ["CONNECTING", "ERROR", "CONNECTED", "STOPPED"])
+        self.assertEqual(poll.call_count, 2)
+
+    @unittest.skipUnless(os.name == "nt", "Windows named mutex")
+    def test_second_windows_poller_cannot_overwrite_heartbeat_or_contact_network(self):
+        with telegram._poller_lock(self.bot.token) as first:
+            self.assertTrue(first)
+            with patch.object(self.bot, "_api") as network, self.assertLogs(level="WARNING") as logs:
+                self.bot.run_forever()
+            network.assert_not_called()
+            self.status.assert_not_called()
+        with telegram._poller_lock(self.bot.token) as after_exit:
+            self.assertTrue(after_exit)
+        self.assertNotIn(self.bot.token, str(logs.output))
 
     def test_link_command_preserves_existing_routing_without_real_send_or_db(self):
         message = {"chat": {"id": 123}, "from": {"username": "example"}, "text": "/link PAIR-CODE"}
@@ -174,9 +209,17 @@ class TelegramWorkerTests(unittest.TestCase):
             polls[0] += 1
             if polls[0] == 2:
                 self.assertEqual(self.states()[-1], "REPLY_ERROR")
-                self.bot.stop()
             return {"ok": True, "result": [{"update_id": 43 + polls[0], "message": message}]}
-        with patch.object(self.bot, "_api", side_effect=poll), patch.object(self.bot, "send_message", side_effect=[TimeoutError(), 123]) as send, patch.object(self.bot._stop, "wait", return_value=False):
+        def success(*_args, **_kwargs):
+            self.bot.stop()
+            return 123
+        responses = iter([None, success])
+        def send_reply(*args, **kwargs):
+            callback = next(responses)
+            if callback is None:
+                raise TimeoutError()
+            return callback(*args, **kwargs)
+        with patch.object(self.bot, "_api", side_effect=poll), patch.object(self.bot, "send_message", side_effect=send_reply) as send, patch.object(self.bot._stop, "wait", return_value=False):
             self.bot.run_forever()
         self.assertEqual(self.states(), ["CONNECTING", "CONNECTED", "REPLY_ERROR", "REPLY_ERROR", "CONNECTED", "STOPPED"])
         self.assertEqual(send.call_count, 2)
@@ -194,10 +237,12 @@ class TelegramWorkerTests(unittest.TestCase):
     def test_status_write_failure_cannot_stop_polling_or_reply_delivery(self):
         message = {"chat": {"id": 1}, "text": "/help"}
         def poll(*_args, **_kwargs):
-            self.bot.stop()
             return {"ok": True, "result": [{"update_id": 44, "message": message}]}
+        def send_reply(*_args, **_kwargs):
+            self.bot.stop()
+            return 123
         self.status.side_effect = PermissionError("private status path")
-        with patch.object(self.bot, "_api", side_effect=poll), patch.object(self.bot, "send_message", return_value=123) as send, self.assertLogs(level="WARNING") as logs:
+        with patch.object(self.bot, "_api", side_effect=poll), patch.object(self.bot, "send_message", side_effect=send_reply) as send, self.assertLogs(level="WARNING") as logs:
             self.bot.run_forever()
         send.assert_called_once()
         self.assertEqual(self.bot._offset, 45)

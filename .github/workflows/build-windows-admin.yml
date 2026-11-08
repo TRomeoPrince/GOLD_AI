@@ -1,17 +1,17 @@
-name: Build GOLD_AI Admin EXE
+name: Build AZT Admin EXE
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - "server/admin_gui.py"
-      - "server/store.py"
-      - "server/credential_vault.py"
-      - "server/hosted_manager.py"
-      - "server/hosted_worker.py"
-      - "server/hosted_executor.py"
-      - "server/requirements.txt"
+      - "server/**"
+      - "broker/**"
+      - "strategies/**"
+      - "tests/**"
+      - "IMAGES/**"
+      - "config.py"
+      - "requirements*.txt"
       - "build/GOLD_AI_Admin.spec"
       - ".github/workflows/build-windows-admin.yml"
 
@@ -23,21 +23,20 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.13"
 
       - name: Install dependencies
         shell: cmd
         run: |
           python -m pip install --upgrade pip
-          pip install -r server\requirements.txt
-          pip install pyinstaller
+          pip install -r requirements-build.txt
 
-      - name: Validate hosted MT5 modules
+      - name: Run isolated owner tests
         shell: cmd
         run: |
-          python -m py_compile server\store.py server\credential_vault.py server\hosted_manager.py server\hosted_executor.py server\hosted_worker.py server\admin_gui.py server\app.py
+          python -m unittest discover -s tests -q
 
-      - name: Build GOLD_AI_Admin.exe
+      - name: Build AZT_Admin.exe
         shell: cmd
         run: |
           python -m PyInstaller --clean --noconfirm --distpath dist --workpath build\admin_pyi build\GOLD_AI_Admin.spec
@@ -45,6 +44,7 @@ jobs:
       - name: Upload Admin EXE
         uses: actions/upload-artifact@v4
         with:
-          name: GOLD_AI-Admin-Windows
-          path: dist/GOLD_AI_Admin.exe
+          name: AZT-Admin-Windows
+          path: dist/AZT_Admin.exe
+          if-no-files-found: error
           retention-days: 90

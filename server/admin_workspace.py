@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 import tkinter as tk
@@ -117,7 +118,7 @@ class AdminWorkspace:
         self.card_frame = ttk.Frame(parent)
         self.card_frame.pack(fill='x')
         self.cards = {}
-        for key, title in (('signal_engine', 'Signal Engine'), ('personal', 'Personal MT5'), ('api', 'Owner API'), ('ngrok', 'Shared ngrok'), ('telegram', 'Telegram Bot'), ('notifications', 'Notifications'), ('news', 'News Lock'), ('pnl', 'Today PnL'), ('positions', 'Open Positions'), ('clients', 'Clients'), ('subscriptions', 'Subscription Alerts')):
+        for key, title in (('signal_engine', 'Signal Engine'), ('risk', 'Global Risk Policy'), ('personal', 'Personal MT5'), ('api', 'Owner API'), ('ngrok', 'Shared ngrok'), ('telegram', 'Telegram Bot'), ('notifications', 'Notifications'), ('news', 'News Lock'), ('pnl', 'Today PnL'), ('positions', 'Open Positions'), ('clients', 'Clients'), ('subscriptions', 'Subscription Alerts')):
             box = tk.Frame(self.card_frame, bg=ui.BG, highlightbackground=ui.EDGE, highlightthickness=1, padx=15, pady=12)
             tk.Label(box, text=title.upper(), bg=ui.BG, fg=ui.MUTED, font=('Segoe UI', 9)).pack(anchor='w')
             value = tk.Label(box, text='—', bg=ui.BG, fg=ui.TEXT, font=('Segoe UI Semibold', 16), anchor='w')
@@ -146,7 +147,7 @@ class AdminWorkspace:
         self._actions(client, [('Issue 30-Day Trial', self.issue_distributor_trial),
                                ('Revoke Trial', self.revoke_distributor_trial),
                                ('Convert Trial', self.convert_distributor_trial)])
-        columns = [('name','Client',135), ('status','Status',85), ('subscription','Subscription',165), ('mode','Execution',100), ('mt5','MT5 Login',110), ('server','Server',150), ('telegram','Telegram',140), ('risk','Risk/Trade',90), ('open','Max Open',90), ('daily','Daily Loss',90), ('profit','Daily Target',100)]
+        columns = [('name','Client',135), ('status','Status',85), ('subscription','Subscription',165), ('mode','Execution',100), ('mt5','MT5 Login',110), ('server','Server',150), ('telegram','Telegram',140), ('risk','Risk/Trade',90), ('open','Max Open',90), ('daily','Daily Loss',90), ('profit','Target Override',115)]
         self.tree = ui.make_table(client, columns, height=12)
         self.tree.bind('<<TreeviewSelect>>', self.on_select)
         payments = ttk.Frame(tabs, padding=10)
@@ -259,7 +260,7 @@ class AdminWorkspace:
         rows = []
         for c in clients:
             sub = backend.subscription_summary(c.id)
-            rows.append((c.id, (c.name, c.status, f"{sub['subscription']['plan_code']} / {sub['effective_status']}", c.execution_mode, c.mt5_login or '—', c.mt5_server or '—', ('@'+c.telegram_username) if c.telegram_username else '—', f'{c.risk_per_trade_pct:.2f}%', f'{c.max_open_risk_pct:.1f}%', f'{c.max_daily_loss_pct:.1f}%', f'{c.daily_profit_target_pct:.1f}%' if c.daily_profit_target_enabled else 'OFF')))
+            rows.append((c.id, (c.name, c.status, f"{sub['subscription']['plan_code']} / {sub['effective_status']}", c.execution_mode, c.mt5_login or '—', c.mt5_server or '—', ('@'+c.telegram_username) if c.telegram_username else '—', f'{c.risk_per_trade_pct:.2f}%', f'{c.max_open_risk_pct:.1f}%', f'{c.max_daily_loss_pct:.1f}%', f'{c.daily_profit_target_pct:.1f}%' if c.daily_profit_target_enabled else 'Use global')))
         ui.set_rows(self.tree, rows)
         if self.selected_name:
             for key, values in rows:
@@ -358,11 +359,23 @@ class AdminWorkspace:
         backend = self._backend()
         clients = store.list_clients()
         for name in ('signal_engine','personal','telegram','notifications'):
-            text = self.services.runtime_status(name) if self.services else 'off'
-            value = text.split(':',1)[0]
-            if self.services and name in self.services.processes and self.services.processes[name].poll() is not None:
-                value = 'OFFLINE'
-            self.cards[name][1].configure(text=value[:23], fg=ui.GREEN if value in {'READY','SCANNING','CONNECTED','IDLE','DELIVERED'} else ui.MUTED if value.lower() in {'off','stopped','starting'} else ui.GOLD)
+            text = self.services.runtime_status(name) if self.services else 'DISABLED'
+            value = text.split(':', 1)[0].strip().upper()
+            if value in {'READY', 'SCANNING', 'CONNECTED', 'IDLE', 'DELIVERED'}:
+                color = ui.GREEN
+            elif value in {'STOPPED', 'DISABLED', 'OFF'}:
+                color = ui.MUTED
+            elif value in {'FAILED', 'ERROR'}:
+                color = ui.RED
+            else:
+                color = ui.GOLD
+            self.cards[name][1].configure(text=value[:23], fg=color)
+        try:
+            store.get_global_risk_policy()
+        except (OSError, ValueError, TypeError, sqlite3.Error):
+            self.cards['risk'][1].configure(text='Unavailable', fg=ui.RED)
+        else:
+            self.cards['risk'][1].configure(text='Loaded', fg=ui.GREEN)
         health = self.services.health if self.services else ''
         api_ok = 'API: healthy' in health
         self.cards['api'][1].configure(text='Connected' if api_ok else 'Offline', fg=ui.GREEN if api_ok else ui.RED)

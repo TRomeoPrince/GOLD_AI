@@ -1,9 +1,10 @@
 import json
+import sqlite3
 import tempfile
 import threading
 import time
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import Mock, patch
@@ -135,7 +136,7 @@ class ExecutorTests(unittest.TestCase):
         self.mt5.symbols_get.return_value=[NS(name='XAUUSD')]
         self.mt5.symbol_info.return_value=NS(visible=True,volume_min=.01,volume_max=100,volume_step=.01,filling_mode=1)
         self.mt5.symbol_info_tick.return_value=NS(ask=2000,bid=1999,time=time.time())
-        self.mt5.order_calc_profit.side_effect=lambda typ,symbol,volume,entry,sl:-1000*volume
+        self.mt5.order_calc_profit.side_effect=lambda typ,symbol,volume,entry,sl:-900*volume
         self.mt5.positions_get.return_value=[]
         self.mt5.order_check.return_value=NS(retcode=0)
         self.patch=patch.object(executor,'mt5',self.mt5)
@@ -152,6 +153,33 @@ class ExecutorTests(unittest.TestCase):
         self.mt5.symbol_info.return_value.volume_min=.1
         self.assertFalse(self.execute().sent)
         self.mt5.order_send.assert_not_called()
+    def test_minimum_lot_above_selected_risk_is_blocked_below_absolute_ceiling(self):
+        self.mt5.account_info.return_value.currency = "USC"
+        self.mt5.order_calc_profit.side_effect = lambda typ, symbol, volume, entry, sl: -1000 * volume
+        result = self.execute()
+        self.assertFalse(result.sent)
+        self.assertEqual(result.planned_risk_pct, 1.0)
+        self.assertIn("RISK_BLOCKED", result.message)
+        self.mt5.order_send.assert_not_called()
+    def test_calibrated_broker_history_blocks_reached_daily_loss_or_profit_target(self):
+        now = datetime(2026, 11, 9, 10, tzinfo=timezone.utc)
+        shift = timedelta(hours=3)
+        self.mt5.symbol_info_tick.return_value.time = (now + shift).timestamp()
+        raw_deal_time = now + shift - timedelta(minutes=1)
+        for realized, target, code in (
+            (-60, 0, "DAILY_LOSS_BLOCKED"),
+            (60, 5, "DAILY_PROFIT_TARGET_REACHED"),
+        ):
+            with self.subTest(realized=realized):
+                self.mt5.account_info.return_value = NS(balance=1000 + realized, equity=1000 + realized)
+                self.mt5.history_deals_get.side_effect = lambda start, end: [NS(profit=realized)] if start <= raw_deal_time <= end else []
+                with patch.object(executor, "datetime", NS(now=lambda tz: now)), \
+                     patch.object(executor, "time", NS(time=now.timestamp)), \
+                     patch.object(executor, "tick_utc_epoch", return_value=now.timestamp()):
+                    result = self.execute(daily_profit_target_enabled=bool(target), daily_profit_target_pct=target)
+                self.assertEqual(self.mt5.history_deals_get.call_args.args, (now.replace(hour=0) + shift, now + shift))
+                self.assertIn(code, result.message)
+                self.mt5.order_send.assert_not_called()
     def test_manual_position_without_stop_blocks_personal_portfolio(self):
         self.mt5.positions_get.return_value=[NS(magic=1,sl=0)]
         self.assertFalse(self.execute().sent)
@@ -189,5 +217,48 @@ class EngineRoutingTests(unittest.TestCase):
             engine.main(stop)
             publish.assert_called_once()
             self.assertEqual(publish.call_args.args[1]['direction'],'BUY')
+
+    def test_database_lock_after_owner_publish_retries_without_duplicate_signal(self):
+        from dataclasses import make_dataclass
+        from server import signal_engine as engine, store
+
+        signal_type = make_dataclass("Signal", ["strategy_id", "direction", "setup_time", "stop_loss", "take_profit"])
+        signal = signal_type("TEST", "BUY", datetime.now(timezone.utc).isoformat(), 1990, 2020)
+        client = Mock(symbol="XAUUSD", clock=NS(offset_seconds=0))
+        registry = Mock()
+        registry.scan.return_value = [signal]
+        stop = threading.Event()
+        busy = sqlite3.OperationalError("database is locked")
+        busy.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        attempts = []
+
+        def enqueue_after_lock(*args, **kwargs):
+            attempts.append(args)
+            if len(attempts) == 1:
+                raise busy
+            return store.enqueue_instruction(*args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as folder:
+            db = Path(folder) / "test.db"
+            with patch.object(store, "DB_PATH", db), patch.object(ps, "DB_PATH", db):
+                customer, _ = store.create_client("Simulated Customer")
+                with (
+                    patch.object(engine, "ACTIVE_MARKETS", {"GOLD": "XAUUSD"}),
+                    patch.object(engine, "MT5Client", return_value=client),
+                    patch.object(engine, "StrategyRegistry", return_value=registry),
+                    patch.object(engine, "active_clients", return_value=[customer]),
+                    patch.object(engine, "news_lock_enabled", return_value=False),
+                    patch.object(engine, "write_status") as status,
+                    patch.object(engine, "enqueue_instruction", side_effect=enqueue_after_lock),
+                    patch.object(stop, "wait") as wait,
+                ):
+                    wait.side_effect = lambda _: stop.set() if wait.call_count == 2 else False
+                    engine.main(stop)
+                self.assertEqual(len(attempts), 2)
+                self.assertIn("RECONNECTING", [call.kwargs["state"] for call in status.call_args_list])
+                self.assertEqual(status.call_args.kwargs["state"], "STOPPED")
+                with ps.connection() as con:
+                    self.assertEqual(con.execute("SELECT count(*) FROM owner_signals").fetchone()[0], 1)
+                    self.assertEqual(con.execute("SELECT count(*) FROM instructions").fetchone()[0], 1)
 
 if __name__=='__main__':unittest.main()

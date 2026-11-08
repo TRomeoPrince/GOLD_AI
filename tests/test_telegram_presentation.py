@@ -173,6 +173,15 @@ class CommandTests(unittest.TestCase):
         self.assertIn('Choose a page from 1 to 1',self.mocks[2].call_args.args[1])
         self.mocks[3].assert_not_called()
 
+    def test_positions_still_sends_scoped_text_when_card_cannot_render(self):
+        with patch('server.trade_telemetry.list_trades',return_value=[position('501')]) as listing,patch('server.pnl_cards.render_positions_cards',side_effect=FileNotFoundError('private path')),self.assertLogs(level='WARNING') as logs:
+            self.handle('/positions')
+        listing.assert_called_once_with(12,state='OPEN')
+        self.mocks[2].assert_called_once()
+        self.assertIn('<code>501</code>',self.mocks[2].call_args.args[1])
+        self.mocks[3].assert_not_called()
+        self.assertNotIn('private path',str(logs.output))
+
     def test_journal_date_uses_client_scope_timezone_and_full_text(self):
         report=dict(date='2026-10-27',trades=[position()],trades_taken=1,wins=1,losses=0,win_rate=100,pnl_by_currency={'USC':.93})
         with patch('server.trade_telemetry.daily_journal',return_value=report) as journal,patch('server.pnl_cards.render_journal_card',return_value=Path('fixture.png')):

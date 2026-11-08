@@ -71,6 +71,24 @@ class AZTBusinessTests(unittest.TestCase):
     def req(self, path, **kwargs):
         return asyncio.run(asgi_request(path, **kwargs))
 
+    def test_invalid_stored_risk_policy_returns_unavailable_instead_of_a_wider_limit(self):
+        token = self.token()
+        for key, invalid, valid in (
+            ("global_risk_per_trade_pct", "NaN", "2.0"),
+            ("global_max_daily_loss_enabled", "unknown", "1"),
+        ):
+            with self.subTest(key=key):
+                with store.connect() as con:
+                    con.execute("UPDATE server_settings SET value=? WHERE key=?", (invalid, key))
+                status, response = self.req("/v1/client/risk-policy", token=token)
+                self.assertEqual(status, 503)
+                self.assertIn("blocked", response["detail"])
+                with store.connect() as con:
+                    con.execute("UPDATE server_settings SET value=? WHERE key=?", (valid, key))
+        with store.connect() as con:
+            con.execute("UPDATE clients SET risk_per_trade_pct=? WHERE id=?", (float("inf"), self.client.id))
+        self.assertEqual(self.req("/v1/client/risk-policy", token=token)[0], 503)
+
     def priced(self, amount="25", accounts=1):
         return business.save_plan("STARTER", amount=amount, duration_days=30, max_mt5_accounts=accounts)
 

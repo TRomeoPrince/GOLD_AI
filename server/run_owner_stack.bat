@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0.."
-start "" "dist\GOLD_AI_Admin.exe"
+call "%~dp0..\START_GOLD_AI.bat"
+exit /b %ERRORLEVEL%

@@ -6,6 +6,7 @@ import html
 import json
 import logging
 import re
+import sqlite3
 from datetime import datetime, timezone
 from . import azt_store
 
@@ -123,14 +124,21 @@ def client_risk_policy(authorization: str = Header(default="")) -> dict:
     _trade_context(authorization)
     if news_lock_enabled():
         raise HTTPException(status_code=409, detail="NEWS_LOCK: New entries are temporarily blocked.")
-    return {**effective_risk_policy(client), "max_single_risk_pct": 2.0, "news_lock": False}
+    try:
+        risk = effective_risk_policy(client)
+    except (ValueError, TypeError, sqlite3.Error):
+        raise HTTPException(status_code=503, detail="Risk policy unavailable. New entries are blocked.") from None
+    return {**risk, "max_single_risk_pct": 2.0, "news_lock": False}
 
 
 @app.get("/v1/mobile/overview", response_model=MobileOverviewResponse)
 def mobile_overview(authorization: str = Header(default="")) -> MobileOverviewResponse:
     client = _client_from_authorization(authorization)
     hosted = hosted_account_for_client(client.id)
-    risk = effective_risk_policy(client)
+    try:
+        risk = effective_risk_policy(client)
+    except (ValueError, TypeError, sqlite3.Error):
+        raise HTTPException(status_code=503, detail="Risk policy unavailable.") from None
     subscription = subscription_for_client(client.id)
     subscription_state = subscription_access(client.id)
     payment = latest_payment_request(client.id)

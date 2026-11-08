@@ -4,7 +4,10 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
-if (-not $ExePath) { $ExePath = Join-Path $repoRoot 'dist_telegram_style\AZT_Admin.exe' }
+if (-not $ExePath) {
+    $ExePath = Join-Path $repoRoot 'AZT_Admin.exe'
+    if (-not (Test-Path -LiteralPath $ExePath)) { $ExePath = Join-Path $repoRoot 'dist\AZT_Admin.exe' }
+}
 $resolvedExe = (Resolve-Path -LiteralPath $ExePath).Path
 $prefix = $repoRoot + [IO.Path]::DirectorySeparatorChar
 $old = @(Get-Process -Name 'GOLD_AI_Admin','AZT_Admin' -ErrorAction SilentlyContinue | Where-Object {

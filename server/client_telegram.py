@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import hashlib
 import json
 import logging
 import os
@@ -18,7 +20,6 @@ from .personal_store import write_status
 from .store import (
     client_by_telegram_chat,
     link_telegram_chat,
-    subscription_for_client,
 )
 
 
@@ -67,6 +68,34 @@ def _status(state: str, message: str) -> None:
         write_status("telegram", state=state, message=message)
     except Exception as exc:
         logging.warning("Telegram status could not be written (%s).", type(exc).__name__)
+
+
+@contextmanager
+def _poller_lock(token: str):
+    """Own polling for this token across Windows processes and install paths."""
+    if os.name != "nt":
+        yield True
+        return
+    import ctypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+    kernel.CreateMutexW.restype = ctypes.c_void_p
+    kernel.ReleaseMutex.argtypes = (ctypes.c_void_p,)
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    name = "Global\\AZT-Telegram-" + hashlib.sha256(token.encode("utf-8")).hexdigest()
+    ctypes.set_last_error(0)
+    handle = kernel.CreateMutexW(None, True, name)
+    error = ctypes.get_last_error()
+    if not handle:
+        raise ctypes.WinError(error)
+    acquired = error != 183  # ERROR_ALREADY_EXISTS
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            kernel.ReleaseMutex(handle)
+        kernel.CloseHandle(handle)
 
 
 class ClientTelegramBot:
@@ -210,7 +239,7 @@ class ClientTelegramBot:
                     reply='Telegram is not linked yet. Use /link YOUR_PAIRING_CODE.'
                 else:
                     from .trade_telemetry import list_trades,daily_journal
-                    from .pnl_cards import render_positions_cards,render_journal_card
+                    from .telegram_delivery import render_optional_card
                     from .telegram_presentation import format_positions,format_journal,POSITIONS_PER_PAGE
                     from .workspace_settings import load_settings
                     from .azt_store import preferences
@@ -226,7 +255,7 @@ class ClientTelegramBot:
                         reply=pages[page-1]
                         selected=positions[(page-1)*POSITIONS_PER_PAGE:page*POSITIONS_PER_PAGE]
                         if selected:
-                            rendered=render_positions_cards(selected,display_timezone=tz)
+                            rendered=render_optional_card('render_positions_cards',selected,display_timezone=tz)
                             photo=rendered[0] if rendered else None
                             photo_caption=f'AZT • Open positions • Page {page}/{len(pages)}\nFull position details and currency totals are in the message above.'
                     else:
@@ -250,7 +279,7 @@ class ClientTelegramBot:
                         page=self._page_number(arguments[0] if arguments else '1',len(pages),'/journal '+date)
                         reply=pages[page-1]
                         if page==1:
-                            photo=render_journal_card(journal,display_timezone=tz)
+                            photo=render_optional_card('render_journal_card',journal,display_timezone=tz)
                             photo_caption=f'AZT • Daily journal • {date} • {tz}\nThe complete summary and trade details are in the message above.'
                     rich_reply=True
             elif command == "/subscription":
@@ -284,7 +313,7 @@ class ClientTelegramBot:
         try:
             if rich_reply:
                 self.send_message(chat_id, reply, parse_mode='HTML')
-                if photo:
+                if photo and not self._stop.is_set():
                     self.send_photo(chat_id,photo,photo_caption)
             elif photo:
                 self.send_photo(chat_id, photo, reply)
@@ -326,6 +355,14 @@ class ClientTelegramBot:
             print("[CLIENT TELEGRAM] GOLD_AI_CLIENT_TELEGRAM_BOT_TOKEN not configured.")
             return
 
+        with _poller_lock(self.token) as acquired:
+            if not acquired:
+                # Another local process can be writing the same heartbeat.
+                logging.warning("Telegram polling skipped because a local poller already owns this bot.")
+                return
+            self._poll_forever()
+
+    def _poll_forever(self) -> None:
         _status("CONNECTING", "Connecting to Telegram.")
         print("[CLIENT TELEGRAM] Client bot started.")
         try:
@@ -343,6 +380,8 @@ class ClientTelegramBot:
                     )
                     self._report_connection()
                     for update in (result or {}).get("result", []):
+                        if self._stop.is_set():
+                            break
                         self._offset = max(self._offset, int(update["update_id"]) + 1)
                         message = update.get("message")
                         if message:

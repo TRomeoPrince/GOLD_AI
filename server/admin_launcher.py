@@ -8,6 +8,10 @@ import socket
 import time
 from pathlib import Path
 from contextlib import contextmanager
+import math
+from server.owner_paths import database_path, owner_home, project_root, resolve_path, state_directory
+
+TELEGRAM_WORKERS = ("telegram", "notifications", "maintenance")
 
 
 @contextmanager
@@ -28,51 +32,23 @@ def external_runtime(external):
             kernel.SetDllDirectoryW(str(sys._MEIPASS))
 
 
-def owner_home():
-    """Select persistent owner data independently of the executable location."""
-    explicit = os.getenv("GOLD_AI_HOME", "").strip()
-    override_db = os.getenv("GOLD_AI_DB_PATH", "").strip()
-    if explicit:
-        root = Path(explicit).expanduser().resolve()
-    elif override_db:
-        parent = Path(override_db).expanduser().resolve().parent
-        root = parent.parent if parent.name.lower() == "server" else parent
-    else:
-        checkout = Path(__file__).resolve().parents[1]
-        frozen = getattr(sys, "frozen", False)
-        exe = Path(sys.executable).resolve()
-        appdata = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "GOLD_AI"
-        candidates = ((
-            exe.parent.parent,
-            exe.parent,
-            Path.cwd(),
-            Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1",
-            appdata,
-        ) if frozen else (checkout, appdata))
-        root = next((folder for folder in candidates
-                     if (folder / "server" / "gold_ai_server.db").is_file()), None)
-        if root is None:
-            root = next((folder for folder in candidates
-                         if (folder / ".env").is_file() and (folder / "server").is_dir()), None)
-        if root is None:
-            root = appdata if frozen else checkout
-    return root.resolve()
-
-
 def configure():
     root = owner_home()
     root.mkdir(parents=True, exist_ok=True)
     from dotenv import load_dotenv
     load_dotenv(root / ".env", override=False)
-    state = Path(os.environ.get("GOLD_AI_STATE_DIR") or root / "server").expanduser().resolve()
-    override_db = os.getenv("GOLD_AI_DB_PATH", "").strip()
-    db = Path(override_db).expanduser().resolve() if override_db else state / "gold_ai_server.db"
+    state = state_directory(root)
+    db = database_path(root)
     # Fail with a useful permissions error rather than sqlite3.OperationalError.
     state.mkdir(parents=True, exist_ok=True)
     db.parent.mkdir(parents=True, exist_ok=True)
-    os.environ["GOLD_AI_DB_PATH"] = str(db)
-    os.environ["GOLD_AI_STATE_DIR"] = str(state)
-    os.environ.setdefault("GOLD_AI_PROJECT_ROOT", str(root))
+    os.environ.update(
+        GOLD_AI_HOME=str(root),
+        GOLD_AI_DB_PATH=str(db),
+        GOLD_AI_STATE_DIR=str(state),
+        GOLD_AI_PROJECT_ROOT=str(project_root(root)),
+        AZT_TELEGRAM_SOURCE_ROOT=str(telegram_source(root)),
+    )
     os.chdir(root)
     return root
 
@@ -80,9 +56,10 @@ def configure():
 def telegram_source(root):
     explicit = os.getenv("AZT_TELEGRAM_SOURCE_ROOT", "").strip()
     if explicit:
-        return Path(explicit).expanduser().resolve()
+        return resolve_path(explicit, root)
     exe = Path(sys.executable).resolve()
-    candidates = (root, exe.parent.parent, exe.parent) if getattr(sys, "frozen", False) else (root, Path(__file__).resolve().parents[1])
+    candidates = (project_root(root), root)
+    candidates += (exe.parent, exe.parent.parent) if getattr(sys, "frozen", False) else (Path(__file__).resolve().parents[1],)
     return next((path for path in candidates
                  if (path / "server/admin_launcher.py").is_file()
                  and (path / ".venv/Scripts/python.exe").is_file()), root)
@@ -175,6 +152,9 @@ class Services:
         self.root = root
         self.processes = {}
         self.errors = {}
+        self.telegram_wanted = set()
+        self.restarts = {}
+        self.started_at = {}
         self.lifecycle_lock = threading.RLock()
         self.logs = root / "logs"
         self.logs.mkdir(parents=True, exist_ok=True)
@@ -204,7 +184,43 @@ class Services:
 
     def start(self, names=("api", "signal_engine", "telegram", "notifications", "maintenance"), extra_env=None):
         with self.lifecycle_lock:
-            return self._start(names,extra_env)
+            if self.monitor_stop.is_set():
+                return
+            if self._start(names, extra_env) is False:
+                return
+            for name in names:
+                process = self.processes.get(name)
+                if name in TELEGRAM_WORKERS and process is not None and name not in self.errors:
+                    self.telegram_wanted.add(name)
+                    self.restarts.pop(name, None)
+
+    def _recover_telegram(self):
+        # Only retry unexpected nonzero exits of previously owned notification
+        # workers. Trading, normal configuration exits, and deliberate stops
+        # are outside this recovery loop.
+        with self.lifecycle_lock:
+            if self.monitor_stop.is_set():
+                return
+            now = time.monotonic()
+            for name in sorted(self.telegram_wanted):
+                process = self.processes.get(name)
+                if process is None:
+                    continue
+                code = process.poll()
+                if code is None:
+                    if now - self.started_at.get(name, now) >= 60:
+                        self.restarts.pop(name, None)
+                    continue
+                if code == 0:
+                    continue
+                attempts, due = self.restarts.get(name, (0, now + 5))
+                if attempts >= 5:
+                    continue
+                if now < due:
+                    self.restarts[name] = (attempts, due)
+                    continue
+                self.restarts[name] = (attempts + 1, now + min(60, 10 * 2**attempts))
+                self._start((name,))
 
     def _start(self,names,extra_env=None):
         # Do not attach to or kill an independently launched API.
@@ -215,8 +231,9 @@ class Services:
                     sock.bind(("127.0.0.1", self.port))
                 except OSError:
                     self.errors["stack"] = "API port occupied. Close the old owner stack first."
-                    return
-        self.errors.pop("stack", None)
+                    return False
+        if "api" in names:
+            self.errors.pop("stack", None)
         for name in names:
             if name in self.processes and self.processes[name].poll() is None:
                 continue
@@ -236,6 +253,9 @@ class Services:
                     continue
                 args=[str(python),'-m','server.admin_launcher','--service',name]
             try:
+                previous = self.processes.get(name)
+                if previous is not None and previous.stdin is not None:
+                    previous.stdin.close()
                 (self.logs / (name + "_status.json")).unlink(missing_ok=True)
                 with open(self.logs / (name + ".log"), "ab", buffering=0) as log:
                     log.write(b"\n=== service starting ===\n")
@@ -247,6 +267,7 @@ class Services:
                         env.pop('PYTHONHOME',None)
                     with external_runtime(external):
                         self.processes[name] = subprocess.Popen(args, cwd=source_root if external else self.root, stdin=subprocess.PIPE, stdout=log, stderr=log, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), env=env)
+                        self.started_at[name] = time.monotonic()
                 self.errors.pop(name, None)
             except Exception as exc:
                 self.errors[name] = str(exc)
@@ -257,6 +278,10 @@ class Services:
         while not self.monitor_stop.is_set():
             values = []
             for label, url in (("API", f"http://127.0.0.1:{self.port}/health"), ("ngrok", "http://127.0.0.1:4040/api/tunnels")):
+                api = self.processes.get("api")
+                if label == "API" and (api is None or api.poll() is not None):
+                    values.append("API: stopped" if api is None or api.returncode == 0 else "API: failed")
+                    continue
                 try:
                     with urllib.request.urlopen(url, timeout=1) as response:
                         data = json.load(response)
@@ -264,11 +289,21 @@ class Services:
                         urls = [t["public_url"] for t in data.get("tunnels", []) if str(self.port) in str(t.get("config", {}).get("addr", ""))]
                         values.append("ngrok: " + (", ".join(urls) if urls else f"no tunnel to {self.port}"))
                     else:
+                        if not isinstance(data, dict) or data.get("ok") is not True or api.poll() is not None:
+                            raise ValueError("Owner API health response unavailable")
                         values.append("API: healthy")
                 except Exception:
                     values.append(label + ": unavailable")
             self.health = " | ".join(values)
-            self._reload_telegram()
+            try:
+                self._reload_telegram()
+                self._recover_telegram()
+            except Exception as exc:
+                try:
+                    with (self.logs / "launcher.log").open("a", encoding="utf-8") as log:
+                        log.write(f"Telegram supervision failed ({type(exc).__name__})\n")
+                except OSError:
+                    pass
             self.monitor_stop.wait(3)
 
     def detect_personal(self, terminal):
@@ -302,32 +337,43 @@ class Services:
         import json
         process = self.processes.get(name)
         if process is None:
-            return "off"
-        if process.poll() is not None:
-            try:
-                value = json.loads((self.logs / (name + "_status.json")).read_text(encoding="utf-8"))
-                return "stopped: " + value.get("message", "see service log")
-            except (OSError, ValueError):
-                return "stopped; see service log"
+            error = self.errors.get(name)
+            if not error:
+                return "STOPPED"
+            return ("DISABLED: " if error.startswith("Not configured") else "FAILED: ") + error
+        code = process.poll()
+        if code is not None and code != 0:
+            attempts = self.restarts.get(name, (0, 0))[0]
+            suffix = "; recovery scheduled" if name in self.telegram_wanted and attempts < 5 else ""
+            return f"FAILED: exited {code}; see service log{suffix}"
         try:
             value = json.loads((self.logs / (name + "_status.json")).read_text(encoding="utf-8"))
-            stale = time.time() - value.get("updated", 0) > 30
-            return value.get("state", "") + (" (status stale)" if stale else "") + ": " + str(value.get("message", value.get("login", "")))
-        except (OSError, ValueError):
-            return "starting" if self.processes.get(name) and self.processes[name].poll() is None else "off"
+            state = str(value["state"])
+            message = str(value.get("message", ""))
+            if code is not None:
+                return ("DISABLED: " if state == "NOT_CONFIGURED" else "STOPPED: ") + message
+            updated = float(value["updated"])
+            if not math.isfinite(updated) or not -5 <= time.time() - updated <= 30:
+                return f"STALE: last state {state}"
+            return state + (": " + message if message else "")
+        except (OSError, ValueError, KeyError, TypeError):
+            return "CONNECTING" if code is None else "STOPPED"
 
     def status(self):
-        rows = [f"{name}: " + (f"Running (PID {p.pid})" if p.poll() is None else f"Exited ({p.returncode}); see logs") for name, p in self.processes.items()]
-        return self.health + " | Engine: " + self.runtime_status("signal_engine") + " | Personal: " + self.runtime_status("personal") + " | Telegram: " + self.runtime_status("telegram") + " | Owner alerts: " + self.runtime_status("notifications") + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.items()])
+        rows = [f"{name}: " + (f"Running (PID {p.pid})" if p.poll() is None else f"Exited ({p.returncode}); see logs") for name, p in self.processes.copy().items()]
+        return self.health + " | Engine: " + self.runtime_status("signal_engine") + " | Personal: " + self.runtime_status("personal") + " | Telegram: " + self.runtime_status("telegram") + " | Owner alerts: " + self.runtime_status("notifications") + " | " + " | ".join(rows + [f"{k}: {v}" for k, v in self.errors.copy().items()])
 
     def stop_named(self, names):
         with self.lifecycle_lock:
             return self._stop_named(names)
 
     def _stop_named(self,names):
+        self.telegram_wanted.difference_update(names)
+        for name in names:
+            self.restarts.pop(name, None)
         processes = [p for name, p in self.processes.items() if name in names]
         for p in processes:
-            if p.poll() is None:
+            if p.stdin is not None:
                 try:
                     p.stdin.close()
                 except OSError:

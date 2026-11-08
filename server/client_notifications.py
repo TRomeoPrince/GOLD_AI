@@ -176,15 +176,29 @@ def command_rows(database=None):
 def run_maintenance(stop):
     from .azt_store import maintenance_tick
     from .personal_store import write_status
-    while not stop.is_set():
+
+    def status(state, message):
         try:
-            maintenance_tick()
-            process_one()
-            write_status('maintenance',state='READY',message='Subscriptions, in-app reminders and optional Telegram copies are monitored.')
+            write_status('maintenance', state=state, message=message)
         except Exception as exc:
-            logging.warning('AZT maintenance retry (%s).',type(exc).__name__)
-            try:
-                write_status('maintenance',state='ERROR',message='Background maintenance will retry; see logs.')
-            except OSError:
-                pass
-        stop.wait(3)
+            logging.warning('Maintenance status could not be written (%s).', type(exc).__name__)
+
+    tasks = ((maintenance_tick, 'Subscription reminders'), (process_one, 'Client Telegram outbox'))
+    try:
+        while not stop.is_set():
+            problems = []
+            for task, label in tasks:
+                if stop.is_set():
+                    break
+                try:
+                    task()
+                except Exception as exc:
+                    problems.append(label)
+                    logging.warning('%s will retry (%s).', label, type(exc).__name__)
+            if problems:
+                status('DEGRADED', ', '.join(problems) + ' will retry. See logs.')
+            else:
+                status('READY', 'Subscriptions, in-app reminders and optional Telegram copies are monitored.')
+            stop.wait(3)
+    finally:
+        status('STOPPED', 'Maintenance stopped. Queued messages remain saved.')

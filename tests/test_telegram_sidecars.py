@@ -1,6 +1,8 @@
 import os
+import json
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -60,6 +62,35 @@ class TelegramSidecarTests(unittest.TestCase):
             self.services._reload_telegram()
             self.assertEqual(popen.call_count,3)
         self.assertFalse(self.services.errors)
+
+    def test_crashed_alert_worker_restarts_after_backoff_but_trading_does_not(self):
+        worker = Mock()
+        worker.poll.return_value = 1
+        self.services.processes.update(telegram=worker, signal_engine=worker)
+        self.services.telegram_wanted.add("telegram")
+        with patch.object(self.services, "_start") as start:
+            with patch("server.admin_launcher.time.monotonic", return_value=10):
+                self.services._recover_telegram()
+                start.assert_not_called()
+            with patch("server.admin_launcher.time.monotonic", return_value=15):
+                self.services._recover_telegram()
+                start.assert_called_once_with(("telegram",))
+            self.services.stop_named(("telegram",))
+            with patch("server.admin_launcher.time.monotonic", return_value=100):
+                self.services._recover_telegram()
+                self.assertEqual(start.call_count, 1)
+
+    def test_status_does_not_treat_a_stale_or_failed_worker_as_ready(self):
+        worker = Mock()
+        worker.poll.return_value = None
+        self.services.processes["telegram"] = worker
+        path = self.root / "logs/telegram_status.json"
+        path.write_text(json.dumps({"state": "READY", "updated": time.time() - 60}), encoding="utf-8")
+        self.assertTrue(self.services.runtime_status("telegram").startswith("STALE"))
+        worker.poll.return_value = 1
+        self.assertTrue(self.services.runtime_status("telegram").startswith("FAILED"))
+        worker.poll.return_value = 0
+        self.assertTrue(self.services.runtime_status("telegram").startswith("STOPPED"))
 
     def test_reload_waits_for_old_roles_and_leaves_trading_processes_alone(self):
         order=[]

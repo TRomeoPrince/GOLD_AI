@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import Mock,patch
 from server import store,client_notifications as delivery,client_telegram as telegram,pnl_cards,workspace_settings
@@ -78,6 +79,18 @@ class DeliveryTests(unittest.TestCase):
         row=delivery.delivery_rows(self.db)[0]
         self.assertEqual((row['state'],row['attempts']),('RETRY',1))
         self.assertNotIn(TOKEN,str(row)+str(logs.output))
+
+    def test_subscription_maintenance_failure_cannot_block_client_outbox(self):
+        stop=threading.Event()
+        delivery.enqueue_client_message(self.client.id,'Message',database=self.db)
+        bot=Mock()
+        bot.send_message.return_value=42
+        with patch('server.azt_store.maintenance_tick',side_effect=ValueError('private settings')),patch('server.personal_store.write_status') as status,patch.object(telegram,'ClientTelegramBot',return_value=bot),patch.object(stop,'wait',side_effect=lambda _:stop.set()),self.assertLogs(level='WARNING') as logs:
+            delivery.run_maintenance(stop)
+        bot.send_message.assert_called_once_with(123,'Message')
+        self.assertEqual(delivery.delivery_rows(self.db)[0]['state'],'SENT')
+        self.assertEqual([call.kwargs['state'] for call in status.call_args_list],['DEGRADED','STOPPED'])
+        self.assertNotIn('private settings',str(logs.output))
 
     def test_unlinked_client_still_receives_in_app_message(self):
         from server import azt_store

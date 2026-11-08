@@ -12,6 +12,24 @@ from server import admin_launcher, store
 
 
 class StandaloneDBTests(unittest.TestCase):
+    def test_config_normalizes_relative_state_and_source_against_owner_home(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            saved = Path.cwd()
+            try:
+                with patch.dict(os.environ, {
+                    "GOLD_AI_HOME": str(root), "GOLD_AI_STATE_DIR": "state",
+                    "GOLD_AI_DB_PATH": "data/owner.db", "GOLD_AI_PROJECT_ROOT": "code",
+                    "AZT_TELEGRAM_SOURCE_ROOT": "code",
+                }):
+                    self.assertEqual(admin_launcher.configure(), root)
+                    self.assertEqual(Path(os.environ["GOLD_AI_DB_PATH"]), root / "data/owner.db")
+                    self.assertEqual(Path(os.environ["GOLD_AI_STATE_DIR"]), root / "state")
+                    self.assertEqual(Path(os.environ["GOLD_AI_PROJECT_ROOT"]), root / "code")
+                    self.assertEqual(Path(os.environ["AZT_TELEGRAM_SOURCE_ROOT"]), root / "code")
+            finally:
+                os.chdir(saved)
+
     def test_frozen_downloads_uses_persistent_appdata_not_downloads_parent(self):
         with tempfile.TemporaryDirectory() as td:
             base = Path(td)

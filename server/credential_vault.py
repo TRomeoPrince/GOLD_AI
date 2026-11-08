@@ -1,33 +1,12 @@
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
-
 from cryptography.fernet import Fernet, InvalidToken
+from .owner_paths import service_home, state_directory
 
 
 def _state_dir() -> Path:
-    override = os.getenv("GOLD_AI_STATE_DIR", "").strip()
-    if override:
-        return Path(override).expanduser().resolve()
-
-    if getattr(sys, "frozen", False):
-        exe = Path(sys.executable).resolve()
-        candidates = [
-            exe.parent.parent / "server",
-            Path.cwd() / "server",
-            Path.home() / "Desktop" / "Bots" / "Forex" / "AMD1" / "server",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-
-        fallback_dir = Path(os.getenv("LOCALAPPDATA", str(Path.home()))) / "GOLD_AI" / "server"
-        fallback_dir.mkdir(parents=True, exist_ok=True)
-        return fallback_dir
-
-    return Path(__file__).resolve().parent
+    return state_directory(service_home())
 
 
 KEY_PATH = _state_dir() / "credential_vault.key"

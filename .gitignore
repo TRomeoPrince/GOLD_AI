@@ -37,6 +37,7 @@ server/.workspace_settings.*.tmp
 build/azt_pyi/
 dist_azt/
 dist_rebuild_20261104/
+dist_recovery_20261109/
 dist_telegram_style/
 build/telegram_style_pyi/
 

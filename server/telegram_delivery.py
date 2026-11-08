@@ -1,9 +1,20 @@
 """Render queued facts in the external Telegram process, just before delivery."""
 import json
+import logging
 import sqlite3
 from contextlib import closing
 from html import escape
 from pathlib import Path
+
+
+def render_optional_card(renderer, *args, **kwargs):
+    """Treat an image failure as a local presentation issue before delivery."""
+    try:
+        from . import pnl_cards
+        return getattr(pnl_cards, renderer)(*args, **kwargs)
+    except Exception as exc:
+        logging.warning("Telegram card unavailable (%s). Sending text only.", type(exc).__name__)
+        return None
 
 
 def _timezone(row, database):
@@ -21,17 +32,18 @@ def prepare(row, *, database=None):
         return row['message'],row.get('media_path') or None,None
     event=json.loads(row['event_json'])
     from .telegram_presentation import format_new_trade,format_stop_update,format_runtime_alert
-    from .pnl_cards import render_trade_card,render_stop_update_card
-    tz=_timezone(row,database)
     kind=event.get('kind')
+    if kind=='RUNTIME':
+        return format_runtime_alert(event.get('account',''),event.get('state',''),event.get('message','')),None,'HTML'
+    tz=_timezone(row,database)
     trade=event.get('trade') or {}
     if kind=='NEW_TRADE':
         # Full execution details remain selectable, readable Telegram text.
         return format_new_trade(trade,display_timezone=tz),None,'HTML'
     if kind=='SL_UPDATED':
         text=format_stop_update(trade,display_timezone=tz)
-        card=render_stop_update_card(trade,display_timezone=tz)
-        return text,card if len(text)<=1024 else None,'HTML'
+        card = render_optional_card('render_stop_update_card', trade, display_timezone=tz) if len(text.encode('utf-16-le')) <= 2048 else None
+        return text,card,'HTML'
     if kind=='TRADE_CLOSED':
         currency=escape(str(trade.get('currency') or 'account currency'))
         pnl=trade.get('pnl',trade.get('profit'))
@@ -39,9 +51,8 @@ def prepare(row, *, database=None):
         text=(f"<b>AZT · TRADE CLOSED</b>\n{escape(str(trade.get('symbol','')))} · {escape(str(trade.get('direction','')))}"
               f"\nTicket #{escape(str(trade.get('ticket','—')))}\nRealized P/L: <b>{amount}</b>"
               f"\nReason: {escape(str(trade.get('result') or 'Closed'))}")
-        return text,render_trade_card(trade,display_timezone=tz),'HTML'
-    if kind=='RUNTIME':
-        return format_runtime_alert(event.get('account',''),event.get('state',''),event.get('message','')),None,'HTML'
+        card = render_optional_card('render_trade_card', trade, display_timezone=tz) if len(text.encode('utf-16-le')) <= 2048 else None
+        return text,card,'HTML'
     raise ValueError('Unknown Telegram presentation event; retained for review.')
 
 

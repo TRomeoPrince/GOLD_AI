@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import floor, isfinite
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import time
 
 import MetaTrader5 as mt5
-from broker.clock import tick_utc_epoch
+from broker.clock import tick_epoch, tick_utc_epoch
 from broker.symbols import resolve_symbol
 
 MAGIC = 560090
@@ -60,6 +60,8 @@ def _volume_for_risk(
 
     raw = target_cash / loss_one
     vmin, vmax, step = float(info.volume_min), float(info.volume_max), float(info.volume_step)
+    if not all(isfinite(value) and value > 0 for value in (vmin, vmax, step)) or vmax < vmin:
+        raise RuntimeError("Invalid broker volume limits; order blocked.")
     if raw < vmin:
         planned = _loss(direction, symbol, vmin, entry, sl)
         pct = 100.0 * planned / equity
@@ -107,62 +109,28 @@ def _open_risk_pct(include_all_positions=False) -> float:
     return 100.0 * total / equity
 
 
-def _daily_profit_pct(strict=False) -> float:
-    account = mt5.account_info()
-    if account is None:
-        return 0.0
-
+def _daily_change_pct(account, *, strict, offset_seconds) -> float:
     now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    deals = mt5.history_deals_get(start, now)
+    # Daily limits use a UTC day. Translate its query boundaries into the
+    # calibrated broker clock, as the history reconciliation worker does.
+    offset = timedelta(seconds=offset_seconds)
+    deals = mt5.history_deals_get(start + offset, now + offset)
     if strict and deals is None:
         raise RuntimeError("Daily MT5 history unavailable; order blocked.")
     deals = deals or ()
 
     realized = 0.0
-    for d in deals:
-        if not all(isfinite(float(getattr(d, field, 0) or 0)) for field in ("profit", "commission", "swap", "fee")):
+    for deal in deals:
+        amounts = [float(getattr(deal, field, 0) or 0) for field in ("profit", "commission", "swap", "fee")]
+        if not all(isfinite(amount) for amount in amounts):
             raise RuntimeError("Daily MT5 history contains invalid values; order blocked.")
-        realized += float(getattr(d, "profit", 0.0) or 0.0)
-        realized += float(getattr(d, "commission", 0.0) or 0.0)
-        realized += float(getattr(d, "swap", 0.0) or 0.0)
-        realized += float(getattr(d, "fee", 0.0) or 0.0)
+        realized += sum(amounts)
 
     start_balance = float(account.balance) - realized
-    if start_balance <= 0:
-        return 0.0
-
-    profit_cash = max(0.0, float(account.equity) - start_balance)
-    return 100.0 * profit_cash / start_balance
-
-
-def _daily_loss_pct(strict=False) -> float:
-    account = mt5.account_info()
-    if account is None:
-        return float("inf")
-
-    now = datetime.now(timezone.utc)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    deals = mt5.history_deals_get(start, now)
-    if strict and deals is None:
-        raise RuntimeError("Daily MT5 history unavailable; order blocked.")
-    deals = deals or ()
-
-    realized = 0.0
-    for d in deals:
-        if not all(isfinite(float(getattr(d, field, 0) or 0)) for field in ("profit", "commission", "swap", "fee")):
-            raise RuntimeError("Daily MT5 history contains invalid values; order blocked.")
-        realized += float(getattr(d, "profit", 0.0) or 0.0)
-        realized += float(getattr(d, "commission", 0.0) or 0.0)
-        realized += float(getattr(d, "swap", 0.0) or 0.0)
-        realized += float(getattr(d, "fee", 0.0) or 0.0)
-
-    start_balance = float(account.balance) - realized
-    if start_balance <= 0:
-        return float("inf")
-
-    loss_cash = max(0.0, start_balance - float(account.equity))
-    return 100.0 * loss_cash / start_balance
+    if not isfinite(start_balance) or start_balance <= 0:
+        raise RuntimeError("Daily MT5 starting balance is invalid; order blocked.")
+    return 100.0 * (float(account.equity) - start_balance) / start_balance
 
 
 def execute_instruction(
@@ -185,6 +153,8 @@ def execute_instruction(
     if not all(isfinite(float(getattr(account, field))) for field in ("equity", "balance")) or float(account.equity) <= 0:
         return ExecutionResult(False, None, "Account equity/balance invalid; order blocked.")
     controls = (risk_per_trade_pct, max_open_risk_pct, max_daily_loss_pct, max_single_risk_pct)
+    if daily_profit_target_enabled:
+        controls += (daily_profit_target_pct,)
     if not all(isfinite(float(value)) and float(value) > 0 for value in controls):
         return ExecutionResult(False, None, "Invalid risk policy; order blocked.")
     max_single_risk_pct = min(15.0, float(max_single_risk_pct))
@@ -192,23 +162,6 @@ def execute_instruction(
     max_daily_loss_pct = min(10.0, float(max_daily_loss_pct))
     if not bool(getattr(terminal, "trade_allowed", False)):
         return ExecutionResult(False, None, "Algo Trading is disabled.")
-
-    if bool(daily_profit_target_enabled):
-        daily_profit = _daily_profit_pct(strict_history)
-        if daily_profit >= float(daily_profit_target_pct):
-            return ExecutionResult(
-                False,
-                None,
-                f"DAILY_PROFIT_TARGET_REACHED: {daily_profit:.2f}% >= {float(daily_profit_target_pct):.2f}%.",
-            )
-
-    daily_loss = _daily_loss_pct(strict_history)
-    if daily_loss >= float(max_daily_loss_pct):
-        return ExecutionResult(
-            False,
-            None,
-            f"DAILY_LOSS_BLOCKED: {daily_loss:.2f}% >= {float(max_daily_loss_pct):.2f}%.",
-        )
 
     direction = str(payload["direction"]).upper()
     if direction not in {"BUY", "SELL"}:
@@ -222,13 +175,29 @@ def execute_instruction(
     if tick is None:
         return ExecutionResult(False, None, f"No live tick for {symbol}.")
 
+    offset_seconds = 0
     if strict_history:
         try:
-            quote_age = time.time() - tick_utc_epoch(mt5, symbol, tick)
+            quote_utc = tick_utc_epoch(mt5, symbol, tick)
+            quote_age = time.time() - quote_utc
+            offset_seconds = round(tick_epoch(tick) - quote_utc)
         except RuntimeError as exc:
             return ExecutionResult(False, None, f"STALE_QUOTE: {exc}")
         if not -5 <= quote_age <= 120:
             return ExecutionResult(False, None, "STALE_QUOTE: no recent broker tick.")
+
+    daily_change = _daily_change_pct(account, strict=strict_history, offset_seconds=offset_seconds)
+    if daily_profit_target_enabled and daily_change >= float(daily_profit_target_pct):
+        return ExecutionResult(
+            False, None,
+            f"DAILY_PROFIT_TARGET_REACHED: {daily_change:.2f}% >= {float(daily_profit_target_pct):.2f}%.",
+        )
+    daily_loss = max(0.0, -daily_change)
+    if daily_loss >= max_daily_loss_pct:
+        return ExecutionResult(
+            False, None,
+            f"DAILY_LOSS_BLOCKED: {daily_loss:.2f}% >= {max_daily_loss_pct:.2f}%.",
+        )
 
     price = float(tick.ask if direction == "BUY" else tick.bid)
     valid = sl < price < tp if direction == "BUY" else tp < price < sl
@@ -245,7 +214,7 @@ def execute_instruction(
         price,
         sl,
         float(risk_per_trade_pct),
-        min(float(max_open_risk_pct), float(max_single_risk_pct)),
+        min(float(risk_per_trade_pct), max_open_risk_pct, max_single_risk_pct),
     )
     if volume <= 0:
         return ExecutionResult(
