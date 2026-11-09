@@ -24,7 +24,15 @@ class MT5Client:
         self.clock: Optional[BrokerClock] = None
 
     def connect(self) -> ConnectionStatus:
-        if not mt5.initialize():
+        # The Mini trial must scan the same *selected* terminal that its
+        # personal executor uses. Normal Owner behavior is unchanged.
+        import os
+        selected = None
+        if os.getenv("AZT_MINI_TRIAL") == "1":
+            from server.personal_store import load_settings
+            selected = load_settings()
+        ready = mt5.initialize(selected["terminal_path"]) if selected else mt5.initialize()
+        if not ready:
             code, message = mt5.last_error()
             raise RuntimeError(f"MT5 initialize failed: {code} | {message}")
 
@@ -34,6 +42,10 @@ class MT5Client:
             code, message = mt5.last_error()
             mt5.shutdown()
             raise RuntimeError(f"MT5 terminal/account unavailable or disconnected: {code} | {message}")
+
+        if selected and (int(account.login) != selected["login"] or str(account.server) != selected["server"]):
+            mt5.shutdown()
+            raise RuntimeError("Mini signal data terminal has the wrong MT5 account; trading is blocked.")
 
         self.symbol = self._resolve_symbol()
         self.clock = BrokerClock.detect(mt5, self.symbol)
