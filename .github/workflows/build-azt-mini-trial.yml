@@ -7,6 +7,7 @@ on:
       - "mini_trial/**"
       - "build/AZT_Mini_Trial.*"
       - "server/personal_worker.py"
+      - "broker/mt5_client.py"
       - "tests/test_mini_trial.py"
       - ".github/workflows/build-azt-mini-trial.yml"
 jobs:
@@ -24,6 +25,11 @@ jobs:
         run: python -m unittest discover -s tests -p "test_mini_trial.py" -v
       - name: Build Mini EXE
         run: python -m PyInstaller --clean --noconfirm --distpath dist_mini --workpath build/mini_pyi build/AZT_Mini_Trial.spec
+      - name: Verify frozen imports without touching broker
+        shell: pwsh
+        run: |
+          & "dist_mini/AZT_Mini_Trial.exe" --verify-bundle
+          if ($LASTEXITCODE -ne 0) { throw "Frozen Mini import check failed" }
       - name: Check EXE exists and record hash
         shell: pwsh
         run: |
