@@ -7,10 +7,16 @@ def main():
     # Packaging verification: import the frozen execution stack without MT5
     # initialization, signal publication, external messages or trade placement.
     if len(sys.argv) == 2 and sys.argv[1] == "--verify-bundle":
-        import server.signal_engine
-        import server.personal_worker
-        import broker.mt5_client
-        import strategies
+        try:
+            import server.signal_engine
+            import server.personal_worker
+            import broker.mt5_client
+            import strategies
+        except BaseException:
+            from pathlib import Path
+            import traceback
+            Path("mini_verify_error.log").write_text(traceback.format_exc(), encoding="utf-8")
+            raise
         return
     configure()
     if len(sys.argv)==3 and sys.argv[1]=="--service":
