@@ -14,4 +14,4 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name="AZT_Mini_Trial",
-          console=True, debug=False, bootloader_ignore_signals=False, strip=False, upx=False)
+          console=False, debug=False, bootloader_ignore_signals=False, strip=False, upx=False)
