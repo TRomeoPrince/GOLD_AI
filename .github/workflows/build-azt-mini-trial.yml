@@ -29,7 +29,7 @@ jobs:
         shell: pwsh
         run: |
           & "dist_mini/AZT_Mini_Trial.exe" --verify-bundle
-          if ($LASTEXITCODE -ne 0) { throw "Frozen Mini import check failed" }
+          if ($LASTEXITCODE -ne 0) { if (Test-Path mini_verify_error.log) { Get-Content mini_verify_error.log }; throw "Frozen Mini import check failed" }
       - name: Check EXE exists and record hash
         shell: pwsh
         run: |
