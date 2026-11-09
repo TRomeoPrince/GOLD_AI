@@ -4,6 +4,14 @@ from mini_trial.runtime import configure
 from mini_trial.clock import require_active, TrialExpired, ClockUnavailable
 
 def main():
+    # Packaging verification: import the frozen execution stack without MT5
+    # initialization, signal publication, external messages or trade placement.
+    if len(sys.argv) == 2 and sys.argv[1] == "--verify-bundle":
+        import server.signal_engine
+        import server.personal_worker
+        import broker.mt5_client
+        import strategies
+        return
     configure()
     if len(sys.argv)==3 and sys.argv[1]=="--service":
         if sys.argv[2] not in ("signal_engine","personal","personal_probe"):
