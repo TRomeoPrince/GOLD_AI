@@ -28,8 +28,9 @@ jobs:
       - name: Verify frozen imports without touching broker
         shell: pwsh
         run: |
-          & "dist_mini/AZT_Mini_Trial.exe" --verify-bundle
-          if ($LASTEXITCODE -ne 0) { if (Test-Path mini_verify_error.log) { Get-Content mini_verify_error.log }; throw "Frozen Mini import check failed" }
+          $exe = (Resolve-Path "dist_mini/AZT_Mini_Trial.exe").Path
+          $process = Start-Process -FilePath $exe -ArgumentList "--verify-bundle" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { if (Test-Path mini_verify_error.log) { Get-Content mini_verify_error.log }; throw "Frozen Mini import check failed, exit $($process.ExitCode)" }
       - name: Check EXE exists and record hash
         shell: pwsh
         run: |
