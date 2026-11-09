@@ -62,7 +62,8 @@ jobs:
             if (!(Test-Path (Join-Path $target $file))) { throw "Missing installed file: $file" }
           }
           & (Join-Path $target "expire_uninstall.cmd")
-          Start-Sleep -Seconds 3
+          if ($LASTEXITCODE -ne 0) { throw "Expiry helper could not launch" }
+          Start-Sleep -Seconds 18
           if (Test-Path (Join-Path $target "AZT_Mini_Trial.exe")) { throw "Mini uninstall helper left application installed" }
           Write-Host "Installer and delayed uninstall helper passed without starting MT5."
       - uses: actions/upload-artifact@v4
