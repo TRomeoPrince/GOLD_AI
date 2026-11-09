@@ -51,6 +51,20 @@ jobs:
           & $iscc "build/AZT_Mini_Trial.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-FileHash "dist_mini/AZT_Mini_Trial_Setup.exe" -Algorithm SHA256
+      - name: Smoke-test silent install and external expiry uninstaller
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP "AZT-Mini-InstallSmoke"
+          $setup = (Resolve-Path "dist_mini/AZT_Mini_Trial_Setup.exe").Path
+          $proc = Start-Process -FilePath $setup -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS", "/DIR=$target") -PassThru -Wait
+          if ($proc.ExitCode -ne 0) { throw "Silent Mini install failed: $($proc.ExitCode)" }
+          foreach ($file in @("AZT_Mini_Trial.exe", "expire_uninstall.cmd", "unins000.exe")) {
+            if (!(Test-Path (Join-Path $target $file))) { throw "Missing installed file: $file" }
+          }
+          & (Join-Path $target "expire_uninstall.cmd")
+          Start-Sleep -Seconds 3
+          if (Test-Path (Join-Path $target "AZT_Mini_Trial.exe")) { throw "Mini uninstall helper left application installed" }
+          Write-Host "Installer and delayed uninstall helper passed without starting MT5."
       - uses: actions/upload-artifact@v4
         with:
           name: AZT-Mini-Trial-Setup
