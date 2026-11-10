@@ -6,6 +6,7 @@ import os
 import time
 import threading
 import logging
+from contextlib import ExitStack
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -60,14 +61,18 @@ def connect_mt5(client_id: int, *, hosted=None):
     # Attach the explicitly provisioned terminal without killing any existing
     # process or broker position. initialize opens it if it is not already up.
     _attach_mt5(terminal)
-    return hosted, verify_hosted_account(hosted)
+    return hosted, verify_hosted_account(hosted, allow_server_case_variants=True)
 
 
-def verify_hosted_account(hosted):
+def verify_hosted_account(hosted, *, allow_server_case_variants=False):
     account, terminal = mt5.account_info(), mt5.terminal_info()
     if account is None or terminal is None or not bool(getattr(terminal, "connected", False)):
         raise TemporaryConnectionError("Hosted MT5 connection unavailable. Sign in to the dedicated portable terminal and check its connection.")
-    if int(account.login) != int(hosted["mt5_login"]) or str(account.server) != str(hosted["mt5_server"]):
+    expected_server, reported_server = str(hosted["mt5_server"]), str(account.server)
+    same_server = expected_server == reported_server
+    if allow_server_case_variants and expected_server.isascii() and reported_server.isascii():
+        same_server = expected_server.lower() == reported_server.lower()
+    if int(account.login) != int(hosted["mt5_login"]) or not same_server:
         raise SafetyStop("Hosted MT5 account changed; manual review required.")
     expected = Path(hosted["terminal_path"]).resolve().parent
     for field in ("path", "data_path"):
@@ -152,6 +157,8 @@ def run(client_id: int, stop=None) -> None:
     since = datetime.now(timezone.utc)
     telemetry_due = 0
     account_lock, failed, lock_denied = None, False, False
+    account_locks = ExitStack()
+    verified_hosted = None
     try:
         while not stop.is_set():
             client = client_by_id(client_id)
@@ -179,16 +186,26 @@ def run(client_id: int, stop=None) -> None:
                         except SafetyStop:
                             lock_denied = True
                             raise
+                        account_locks.callback(account_lock.close)
                         locked_identity = (record["mt5_login"], record["mt5_server"], record["terminal_path"])
                     elif locked_identity != (record["mt5_login"], record["mt5_server"], record["terminal_path"]):
                         raise SafetyStop("Hosted MT5 configuration changed; restart after manual review.")
                     hosted, info = connect_mt5(client_id, hosted=record)
+                    reported_server = str(info.server)
+                    if verified_hosted is None:
+                        verified_hosted = {**hosted, "mt5_server": reported_server}
+                        if reported_server != hosted["mt5_server"]:
+                            # Also hold the broker spelling used by personal and older workers.
+                            # Keep the configured spelling for existing ledger and journal keys.
+                            account_locks.callback(_acquire_account_lock(verified_hosted).close)
+                    elif reported_server != verified_hosted["mt5_server"]:
+                        raise SafetyStop("Hosted MT5 account changed; manual review required.")
                     since = datetime.now(timezone.utc)  # No reconnect backlog.
                     connected = True
                     if retries.recovered():
                         _notify(client_id, "AZT MT5 recovered. Waiting for fresh signals.", f"hosted-recovered:{client_id}:{since.isoformat()}")
                     set_hosted_account_status(client_id, "ACTIVE")
-                info = verify_hosted_account(hosted)
+                info = verify_hosted_account(verified_hosted)
             except TemporaryConnectionError as exc:
                 connected = False
                 mt5.shutdown()
@@ -235,7 +252,7 @@ def run(client_id: int, stop=None) -> None:
                 else:
                     policy = effective_risk_policy(client)
                     def guard():
-                        verify_hosted_account(hosted)
+                        verify_hosted_account(verified_hosted)
                         current = client_by_id(client_id)
                         if stop.is_set() or current is None or current.status != "ACTIVE" or current.execution_mode != "HOSTED":
                             raise SafetyStop("Hosted execution stopped before order submission.")
@@ -246,7 +263,7 @@ def run(client_id: int, stop=None) -> None:
                             raise SafetyStop("Risk policy changed before hosted order submission.")
                         if stop.is_set():
                             raise SafetyStop("Hosted execution stopped before order submission.")
-                        verify_hosted_account(hosted)
+                        verify_hosted_account(verified_hosted)
                         if not signal_is_fresh(payload):
                             raise SafetyStop("Signal expired before order submission.")
                     result = execute_instruction(
@@ -305,7 +322,7 @@ def run(client_id: int, stop=None) -> None:
             try:
                 mt5.shutdown()
             finally:
-                account_lock.close()
+                account_locks.close()
         if not failed:
             try:
                 set_hosted_runtime(client_id, worker_pid=None, last_error="", last_seen_utc=utc_now())

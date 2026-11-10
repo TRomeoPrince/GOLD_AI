@@ -3,7 +3,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from server import hosted_worker as worker
 from server.reconnect import SafetyStop, TemporaryConnectionError
@@ -33,6 +33,23 @@ class HostedAttachTests(unittest.TestCase):
         self.api.account_info.return_value.login = 456
         with self.assertRaises(SafetyStop):
             worker.connect_mt5(2)
+        self.api.login.assert_not_called()
+
+    def test_attach_accepts_ascii_case_variant_of_same_server(self):
+        account = self.api.account_info.return_value
+        account.server = "Testbroker"
+        _, attached = worker.connect_mt5(2)
+        self.assertIs(attached, account)
+        self.api.login.assert_not_called()
+        with self.assertRaisesRegex(SafetyStop, "account changed"):
+            worker.verify_hosted_account(self.record)
+
+    def test_attach_rejects_a_different_broker_server(self):
+        for server in ("TestBroker-Live", "TestBro\u212aer"):
+            with self.subTest(server=server):
+                self.api.account_info.return_value.server = server
+                with self.assertRaisesRegex(SafetyStop, "account changed"):
+                    worker.connect_mt5(2)
         self.api.login.assert_not_called()
 
     def test_missing_account_does_not_initiate_broker_login(self):
@@ -86,6 +103,62 @@ class HostedAttachTests(unittest.TestCase):
         self.api.shutdown.assert_not_called()
         worker.set_hosted_runtime.assert_not_called()
         worker.set_hosted_account_status.assert_not_called()
+
+    def test_busy_reported_server_lock_blocks_hosted_processing(self):
+        self.api.account_info.return_value.server = "Testbroker"
+        configured_lock = Mock()
+        client = SimpleNamespace(status="ACTIVE", execution_mode="HOSTED")
+        with (
+            patch.object(worker, "client_by_id", return_value=client),
+            patch.object(worker, "subscription_access", return_value={"allowed": True}),
+            patch.object(worker, "_acquire_account_lock",
+                         side_effect=[configured_lock, SafetyStop("already controls")]) as acquire,
+            patch.object(worker, "next_instruction") as next_instruction,
+            self.assertRaisesRegex(SafetyStop, "already controls"),
+        ):
+            worker.run(2)
+        self.assertEqual(acquire.call_args_list, [
+            call(self.record),
+            call({**self.record, "mt5_server": "Testbroker"}),
+        ])
+        self.assertNotIn(call(2, "ACTIVE"), worker.set_hosted_account_status.call_args_list)
+        next_instruction.assert_not_called()
+        self.api.order_send.assert_not_called()
+        self.api.shutdown.assert_called_once()
+        configured_lock.close.assert_called_once()
+
+    def test_case_variant_holds_both_locks_until_hosted_shutdown(self):
+        account = self.api.account_info.return_value
+        account.server = "Testbroker"
+        account.balance = account.equity = 1000
+        configured_lock, reported_lock = Mock(), Mock()
+        client = SimpleNamespace(status="ACTIVE", execution_mode="HOSTED")
+        stop = threading.Event()
+
+        def finish(_client_id):
+            configured_lock.close.assert_not_called()
+            reported_lock.close.assert_not_called()
+            stop.set()
+            return None
+
+        with (
+            patch.object(worker, "client_by_id", return_value=client),
+            patch.object(worker, "subscription_access", return_value={"allowed": True}),
+            patch.object(worker, "_acquire_account_lock",
+                         side_effect=[configured_lock, reported_lock]) as acquire,
+            patch.object(worker, "_capture_hosted"),
+            patch.object(worker, "next_instruction", side_effect=finish) as next_instruction,
+        ):
+            worker.run(2, stop)
+        self.assertEqual(acquire.call_args_list, [
+            call(self.record),
+            call({**self.record, "mt5_server": "Testbroker"}),
+        ])
+        next_instruction.assert_called_once_with(2)
+        self.api.shutdown.assert_called_once()
+        configured_lock.close.assert_called_once()
+        reported_lock.close.assert_called_once()
+        self.api.order_send.assert_not_called()
 
     def test_temporary_ipc_failure_retries_with_one_lock_then_shuts_down(self):
         stop = threading.Event()

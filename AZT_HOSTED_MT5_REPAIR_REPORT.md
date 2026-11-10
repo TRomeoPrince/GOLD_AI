@@ -34,3 +34,15 @@ Portable mode remains enabled for this dedicated installation. The observed proc
 3. After an approved binary cutover, perform one controlled attach observation with trade dispatch disabled. Compare terminal PID, installation/data paths, connection and permission flags, AZT log, and terminal journal before and after. A mode mismatch, provider network disconnect, or permission change still needs independent evidence. If disconnect recurs, stop and preserve logs rather than retrying repeatedly.
 
 The running installation at `C:\Users\USER\Desktop\Gold_AI` retains the prior verified recovery binary. Diagnostics used read-only process information, log summaries and a read-only SQLite lookup of the hosted path and PID. No live attach, login, position change, order, restart or database write was performed. Codex usage was visible; 5% of the short window had been consumed at the intermediate check.
+
+## Follow-up on the false account-change stop
+
+The active Admin was launched from the repair build directory and resolved its runtime home to AppData. The AppData database stored the same login that the dedicated MT5 journal authorized at 04:53:24, but stored `Justmarkets-live7` while the broker reported `JustMarkets-Live7`. The Desktop database and journal showed the same capitalization difference. The prior exact string comparison reproduced the false SafetyStop with simulated MT5. The repeated log headers correspond to separate worker starts. The Admin's automatic restart loop covers Telegram services only.
+
+The worker now accepts ASCII capitalization differences on initial attach after verifying the numeric login. When the saved and reported spellings differ, it holds both account locks before becoming active. This preserves exclusion against Personal Trading and older workers that use the broker's reported spelling. Subsequent checks pin that exact reported identity. Existing journal and execution-claim keys keep their saved spelling. The portable-path and trading-permission checks still apply.
+
+Four regression tests cover case-only attach, a different server and a Unicode lookalike, a busy account lock, and holding both locks through shutdown. All 264 Owner tests passed with a temporary database and simulated MT5.
+
+The intended installation stays at `C:\Users\USER\Desktop\Gold_AI`. The Desktop and AppData databases were inspected read-only. Reconcile them before any approved cutover to the Desktop launcher. The live Admin and hosted terminal were left running as found.
+
+The Windows build and isolated Admin startup/shutdown test passed. All 13 hosted attachment tests also passed against the worker code extracted from the EXE. Build SHA256 `B031B03CDD4C7394447150C36737434DD9020A73218B43F3DB39A6D97FD3AF25`.
