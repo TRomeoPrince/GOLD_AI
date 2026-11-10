@@ -27,13 +27,13 @@ Portable mode remains enabled for this dedicated installation. The observed proc
 - `GOLD_AI_TEST_EXE` set to that binary and `python tests/smoke_admin_exe.py` passed. The loopback health probe logged a Windows connection reset, followed by successful health responses and cooperative shutdown. Archive inspection verified the patched hosted worker, and launching `--service hosted_2` with a temporary empty DB and an open supervisor pipe exited safely before any MT5 attach. The first probe with stdin closed did not exercise the expected failure path. The corrected probe passed.
 - Branch `fix/hosted-mt5-start-20261110`, repair `71f485e2fe9dc6f133169ea616d9bb06a415542f`. Forked from Owner main `c0f7263742438a33fc1c9ba41dedfcfd972655fd`, whose only change from protected Owner `825795d84b8c3dd63b864024fc2641720b269e06` was the baseline document. Protected Client `38d7e54fba60411ddf60f2d8b0bedd5c28ee8591` was retained. No merge, PR or live deployment.
 
-## Remaining live work
+## Original cutover plan (historical)
 
 1. Highest priority: after explicit approval, have the operator stop the current hosted worker cooperatively and verify that its PID and any duplicate have exited. Keep the broker terminal and existing positions under operator control. Verify the dedicated terminal shortcut/process mode and its **File → Open Data Folder** result before attempting another start.
 2. Verify the expected account and server locally. Check the terminal Algo Trading and external Python API settings and broker-side account permissions without bypassing a restriction. Record sanitized timestamps and flag states, never credentials or login numbers.
 3. After an approved binary cutover, perform one controlled attach observation with trade dispatch disabled. Compare terminal PID, installation/data paths, connection and permission flags, AZT log, and terminal journal before and after. A mode mismatch, provider network disconnect, or permission change still needs independent evidence. If disconnect recurs, stop and preserve logs rather than retrying repeatedly.
 
-The running installation at `C:\Users\USER\Desktop\Gold_AI` retains the prior verified recovery binary. Diagnostics used read-only process information, log summaries and a read-only SQLite lookup of the hosted path and PID. No live attach, login, position change, order, restart or database write was performed. Codex usage was visible; 5% of the short window had been consumed at the intermediate check.
+At this stage, the Desktop installation still held the prior verified recovery binary. Diagnostics used read-only process information, log summaries and a read-only SQLite lookup of the hosted path and PID. No live attach, login, position change, order, restart or database write was performed. Codex usage was visible; 5% of the short window had been consumed at the intermediate check.
 
 ## Follow-up on the false account-change stop
 
@@ -43,6 +43,18 @@ The worker now accepts ASCII capitalization differences on initial attach after 
 
 Four regression tests cover case-only attach, a different server and a Unicode lookalike, a busy account lock, and holding both locks through shutdown. All 264 Owner tests passed with a temporary database and simulated MT5.
 
-The intended installation stays at `C:\Users\USER\Desktop\Gold_AI`. The Desktop and AppData databases were inspected read-only. Reconcile them before any approved cutover to the Desktop launcher. The live Admin and hosted terminal were left running as found.
+The Desktop and AppData databases were inspected read-only at this stage. The Admin and hosted terminal continued running until the later approved cutover.
 
 The Windows build and isolated Admin startup/shutdown test passed. All 13 hosted attachment tests also passed against the worker code extracted from the EXE. Build SHA256 `B031B03CDD4C7394447150C36737434DD9020A73218B43F3DB39A6D97FD3AF25`.
+
+## Desktop cutover and verification
+
+Recorded 2026-11-10 05:57:27 EAT (UTC+03:00). The approved cutover closed the old Admin and its workers cooperatively. The verified case-fix build from `d72c474` is installed as `%USERPROFILE%\Desktop\Gold_AI\AZT_Admin.exe`. Launch through `START_GOLD_AI.bat` to pin the Owner home, database, and external Telegram runtime to the Desktop installation.
+
+Both SQLite databases were backed up and checked before merging. The Desktop database supplied client records, pairings, subscriptions, bindings, pending history, and the hosted vault/profile association. Reconciliation carried over the newer personal execution claim and trade records from AppData, retained older trade metadata where the refreshed records omitted it, and preserved delivered Telegram entries as sent. It kept the newer 5% personal maximum open risk setting. The merged database passed integrity and foreign-key checks. The retained backup set includes both AppData snapshots, the original Desktop files, the verified merge, and the reconciliation script.
+
+During readiness verification, News Lock blocked entries. The first read-only IPC check timed out during terminal startup. The Desktop journal then showed authorization and synchronization, and attachment to the running terminal confirmed the expected login, server, installation path, and portable data path. The permission check correctly reported Algo Trading off. After the terminal was ready, `hosted_2` reached Active and its heartbeat advanced. It marked 10 expired instructions skipped and preserved the existing review record. The API, GOLD feed, ngrok route, and Telegram were verified. The readiness checks placed no orders.
+
+At the later read-only observation, the GOLD engine was scanning, `hosted_2` was Active, Personal MT5 was Ready, and News Lock was off. The hosted queue had no pending instructions. The notifications worker had delivered a recent alert. The dashboard Failed badge reflected six older alerts that had exhausted retries. The cleanup recycled the draft merge, redundant rollback copies, and duplicate local handoffs while retaining the verified backups and runtime.
+
+[Current continuation prompt](AZT_CONTINUATION_PROMPT_UPDATED_AT_2026-11-10_05-57-27_EAT.md)

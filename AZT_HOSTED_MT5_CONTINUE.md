@@ -1,5 +1,7 @@
 # Continue the hosted MT5 investigation
 
+The [timestamped continuation prompt](AZT_CONTINUATION_PROMPT_UPDATED_AT_2026-11-10_05-57-27_EAT.md) supersedes this historical investigation handoff.
+
 Read `AZT_HOSTED_MT5_REPAIR_REPORT.md` on Owner branch `fix/hosted-mt5-start-20261110`. Repair commit `71f485e2fe9dc6f133169ea616d9bb06a415542f` changed only `server/hosted_worker.py`, `tests/test_hosted_mt5_attach.py` and one fixture in `tests/test_azt_trading.py`. Preserve Owner #WORKING `825795d84b8c3dd63b864024fc2641720b269e06` and Client #WORKING `38d7e54fba60411ddf60f2d8b0bedd5c28ee8591`. Keep work off main and obtain explicit approval before any deployment or live action.
 
 The user reports a JustMarkets-Live7 disconnect after starting `hosted_2` despite successful manual login. The old combined terminal-permission exception cannot tell which flag was false. The stored path and observed dedicated process matched and that process had `/portable`. The original incident's mode and root cause are still unknown. Mocks reproduced unexpected startup broker login. The repair makes hosted attachment login-free, verifies terminal/data paths and account identity, acquires the account mutex before MT5 interaction, and separates permission errors from temporary disconnects. Portable mode remains enabled. The isolated Owner suite passed 260 tests. Use the report for the verified build state.
