@@ -70,7 +70,16 @@ def probe():
         mt5.shutdown()
 
 
+def _mini_trial_guard(*, force=False):
+    # Separate Mini distribution only: fail closed without verified internet UTC.
+    # Normal Owner personal trading is unaffected.
+    if os.getenv("AZT_MINI_TRIAL") == "1":
+        from mini_trial.clock import require_active
+        require_active(force=force)
+
+
 def execute_signal(row, settings, stop):
+    _mini_trial_guard(force=True)
     verify_account(settings, stop)
     if news_lock_enabled():
         return "SKIPPED", "News lock is enabled."
@@ -89,6 +98,7 @@ def execute_signal(row, settings, stop):
         latest = effective_risk_policy(SimpleNamespace(**settings, risk_per_trade_enabled=True, max_open_risk_enabled=True, max_daily_loss_enabled=True, daily_profit_target_enabled=False, daily_profit_target_pct=0))
         if any(latest.get(field) != policy.get(field) for field in ("risk_per_trade_pct", "max_open_risk_pct", "max_daily_loss_pct", "daily_profit_target_enabled", "daily_profit_target_pct")):
             raise SafetyStop("Risk policy changed before order submission; wait for a fresh signal.")
+        _mini_trial_guard(force=True)  # Last online entitlement check before broker order send.
         # Database reads above can block. Identity/Stop/age must be the final
         # checks, after those reads, immediately before order_send.
         _verify_terminal_identity(settings, stop)
@@ -165,6 +175,7 @@ def run(stop):
         last_result = "Waiting for fresh signals"
         telemetry_due = 0
         while not stop.is_set():
+            _mini_trial_guard()  # Main window checks independently; worker must also enforce expiry.
             try:
                 if not connected:
                     write_status("personal", state="CONNECTING", desired=True, login=settings["login"], server=settings["server"])
