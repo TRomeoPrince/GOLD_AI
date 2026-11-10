@@ -232,6 +232,7 @@ class ReconnectTests(unittest.TestCase):
         clock.fromisoformat.side_effect = datetime.fromisoformat
         with patch.object(hosted, "datetime", clock), patch.object(hosted, "client_by_id", return_value=NS(status="ACTIVE", execution_mode="HOSTED")), \
              patch.object(hosted, "subscription_access", return_value={"allowed": True}), \
+             patch.object(hosted, "hosted_account_for_client", return_value={"mt5_login": 123, "mt5_server": "Broker", "terminal_path": "fixture"}), \
              patch.object(hosted, "connect_mt5", return_value=({"mt5_login": 123, "mt5_server": "Broker"}, account)), \
              patch.object(hosted, "verify_hosted_account", return_value=account), patch.object(hosted, "_capture_hosted"), \
              patch.object(hosted, "_acquire_account_lock"), \

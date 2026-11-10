@@ -11,7 +11,6 @@ from pathlib import Path
 
 import MetaTrader5 as mt5
 
-from .credential_vault import decrypt_secret
 from .hosted_executor import execute_instruction
 from .reconnect import TemporaryConnectionError, SafetyStop, RetryState
 from .personal_store import claim_signal, connection as ledger_connection
@@ -20,7 +19,7 @@ from .store import (
     acknowledge_instruction,
     client_by_id,
     effective_risk_policy,
-    hosted_account_secret_for_client,
+    hosted_account_for_client,
     next_instruction,
     set_hosted_account_status,
     set_hosted_runtime,
@@ -38,7 +37,7 @@ def _attach_mt5(terminal_path: Path) -> None:
         raise TemporaryConnectionError("Hosted MT5 IPC connection unavailable.")
 
 
-def connect_mt5(client_id: int, *, reconnect=False):
+def connect_mt5(client_id: int, *, hosted=None):
     set_hosted_account_status(client_id, "CONNECTING")
     set_hosted_runtime(
         client_id,
@@ -47,40 +46,38 @@ def connect_mt5(client_id: int, *, reconnect=False):
         account_balance=None,
         account_equity=None,
     )
-    hosted = hosted_account_secret_for_client(client_id)
+    if hosted is None:
+        hosted = hosted_account_for_client(client_id)
     if not hosted:
         raise SafetyStop("Hosted MT5 account not found.")
 
     terminal_path = str(hosted.get("terminal_path") or "")
-    if not terminal_path or not Path(terminal_path).exists():
+    if not terminal_path or not Path(terminal_path).is_absolute() or not Path(terminal_path).is_file():
         raise SafetyStop("Provisioned MT5 terminal was not found.")
 
-    terminal = Path(terminal_path)
+    terminal = Path(terminal_path).resolve()
 
     # Attach the explicitly provisioned terminal without killing any existing
     # process or broker position. initialize opens it if it is not already up.
     _attach_mt5(terminal)
-    account = mt5.account_info()
-    if reconnect and account is not None and (int(account.login) != int(hosted["mt5_login"]) or str(account.server) != str(hosted["mt5_server"])):
-        raise SafetyStop("Hosted MT5 account changed; manual review required.")
-    if account is None or int(account.login) != int(hosted["mt5_login"]) or str(account.server) != str(hosted["mt5_server"]):
-        password = decrypt_secret(str(hosted["password_ciphertext"]))
-        try:
-            if not mt5.login(int(hosted["mt5_login"]), password=password, server=str(hosted["mt5_server"]), timeout=10000):
-                raise TemporaryConnectionError("Hosted MT5 login unavailable.")
-        finally:
-            password = ""
     return hosted, verify_hosted_account(hosted)
 
 
 def verify_hosted_account(hosted):
     account, terminal = mt5.account_info(), mt5.terminal_info()
     if account is None or terminal is None or not bool(getattr(terminal, "connected", False)):
-        raise TemporaryConnectionError("Hosted MT5 connection unavailable.")
+        raise TemporaryConnectionError("Hosted MT5 connection unavailable. Sign in to the dedicated portable terminal and check its connection.")
     if int(account.login) != int(hosted["mt5_login"]) or str(account.server) != str(hosted["mt5_server"]):
         raise SafetyStop("Hosted MT5 account changed; manual review required.")
-    if not bool(getattr(terminal, "trade_allowed", False)) or bool(getattr(terminal, "tradeapi_disabled", False)):
-        raise SafetyStop("Hosted MT5 Algo Trading or Python API trading is disabled.")
+    expected = Path(hosted["terminal_path"]).resolve().parent
+    for field in ("path", "data_path"):
+        actual = getattr(terminal, field, None)
+        if not actual or Path(actual).resolve() != expected:
+            raise SafetyStop(f"Hosted MT5 {field} differs from its provisioned portable directory.")
+    if bool(getattr(terminal, "tradeapi_disabled", False)):
+        raise SafetyStop("Hosted MT5 Python API trading is disabled.")
+    if not bool(getattr(terminal, "trade_allowed", False)):
+        raise SafetyStop("Hosted MT5 Algo Trading is disabled.")
     if not bool(getattr(account, "trade_allowed", False)) or not bool(getattr(account, "trade_expert", False)):
         raise SafetyStop("Hosted account does not permit automated trading.")
     return account
@@ -151,10 +148,10 @@ def _acquire_account_lock(hosted):
 def run(client_id: int, stop=None) -> None:
     stop = stop or threading.Event()
     retries, clocks = RetryState(), {}
-    connected, ever_connected = False, False
+    connected = False
     since = datetime.now(timezone.utc)
     telemetry_due = 0
-    account_lock, failed = None, False
+    account_lock, failed, lock_denied = None, False, False
     try:
         while not stop.is_set():
             client = client_by_id(client_id)
@@ -173,11 +170,21 @@ def run(client_id: int, stop=None) -> None:
                 continue
             try:
                 if not connected:
-                    hosted, info = connect_mt5(client_id, reconnect=ever_connected)
+                    record = hosted_account_for_client(client_id)
+                    if not record:
+                        raise SafetyStop("Hosted MT5 account not found.")
                     if account_lock is None:
-                        account_lock = _acquire_account_lock(hosted)
+                        try:
+                            account_lock = _acquire_account_lock(record)
+                        except SafetyStop:
+                            lock_denied = True
+                            raise
+                        locked_identity = (record["mt5_login"], record["mt5_server"], record["terminal_path"])
+                    elif locked_identity != (record["mt5_login"], record["mt5_server"], record["terminal_path"]):
+                        raise SafetyStop("Hosted MT5 configuration changed; restart after manual review.")
+                    hosted, info = connect_mt5(client_id, hosted=record)
                     since = datetime.now(timezone.utc)  # No reconnect backlog.
-                    connected, ever_connected = True, True
+                    connected = True
                     if retries.recovered():
                         _notify(client_id, "AZT MT5 recovered. Waiting for fresh signals.", f"hosted-recovered:{client_id}:{since.isoformat()}")
                     set_hosted_account_status(client_id, "ACTIVE")
@@ -279,6 +286,9 @@ def run(client_id: int, stop=None) -> None:
 
     except Exception as exc:
         failed = True
+        if lock_denied:
+            # Leave the active owner's PID and status intact.
+            raise
         set_hosted_runtime(
             client_id,
             worker_pid=None,
@@ -291,9 +301,11 @@ def run(client_id: int, stop=None) -> None:
             pass
         raise
     finally:
-        mt5.shutdown()
         if account_lock is not None:
-            account_lock.close()
+            try:
+                mt5.shutdown()
+            finally:
+                account_lock.close()
         if not failed:
             try:
                 set_hosted_runtime(client_id, worker_pid=None, last_error="", last_seen_utc=utc_now())
