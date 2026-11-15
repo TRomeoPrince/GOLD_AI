@@ -1,7 +1,7 @@
 """Mini entry: three local worker roles only, never customer/API/hosted/Telegram."""
 import sys
 from mini_trial.runtime import configure
-from mini_trial.clock import require_active, TrialExpired, ClockUnavailable
+from mini_trial.clock import require_active, expired_existing_lease, TrialExpired, ClockUnavailable
 
 def main():
     # Packaging verification: import the frozen execution stack without MT5
@@ -19,6 +19,18 @@ def main():
             raise
         return
     configure()
+    # The Windows scheduled check never starts the clock for someone who
+    # downloaded/installed but has not actually opened the trial.
+    if len(sys.argv) == 2 and sys.argv[1] == "--expiry-check":
+        try:
+            if expired_existing_lease():
+                from mini_trial.cleanup import start_uninstall
+                start_uninstall()
+        except ClockUnavailable:
+            # An offline/uncertain internet clock blocks trades. Retry cleanup
+            # at the next scheduled check rather than guessing the date.
+            pass
+        return
     if len(sys.argv)==3 and sys.argv[1]=="--service":
         if sys.argv[2] not in ("signal_engine","personal","personal_probe"):
             raise SystemExit("Unauthorized Mini worker")
