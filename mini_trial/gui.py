@@ -4,7 +4,7 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from mini_trial.clock import require_active, ClockUnavailable, TrialExpired
+from mini_trial.clock import require_active, load_lease, ClockUnavailable, TrialExpired
 from mini_trial.cleanup import start_uninstall
 from mini_trial.manager import MiniManager
 from server.personal_store import save_settings, load_settings
@@ -13,7 +13,7 @@ import os
 class MiniGUI(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("AGORA ZION TRADER | Mini Trial")
+        self.title("AGORA ZION TRADER | Mini Trial (14 days)")
         self.geometry("790x550")
         self.minsize(690,485)
         self.home=Path(os.environ["GOLD_AI_HOME"])
@@ -35,7 +35,7 @@ class MiniGUI(tk.Tk):
         page.pack(fill="both",expand=True)
         ttk.Label(page,text="AZT MINI TRADER",font=("Segoe UI",20,"bold")).pack(anchor="w")
         ttk.Label(page,text="Local MT5 personal trading only • No client management or Owner API").pack(anchor="w")
-        ttk.Label(page,text="TRIAL ENDS 17 NOVEMBER 2026, 11:59 PM EAT",font=("Segoe UI",11,"bold")).pack(anchor="w",pady=7)
+        ttk.Label(page,text="14-DAY TRIAL • STARTS ON FIRST VERIFIED LAUNCH",font=("Segoe UI",11,"bold")).pack(anchor="w",pady=7)
         ttk.Label(page,textvariable=self.internet,wraplength=710).pack(anchor="w")
         try:
             saved=load_settings()
@@ -134,7 +134,8 @@ class MiniGUI(tk.Tk):
         def action():
             try:
                 now=require_active(force=True)
-                message=f"Verified internet UTC: {now:%Y-%m-%d %H:%M:%S}"
+                deadline=load_lease()["expires_utc"]
+                message=f"Verified internet UTC: {now:%Y-%m-%d %H:%M:%S} | Expires: {deadline:%Y-%m-%d %H:%M UTC}"
                 expired=False
             except TrialExpired:
                 message,expired="Trial expired; uninstalling",True
