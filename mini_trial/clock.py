@@ -37,7 +37,7 @@ def lease_path(override=None):
     root = os.environ.get("GOLD_AI_STATE_DIR")
     if not root:
         root = str(Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-                   / "AZT_Mini_Trial" / "state")
+                   / "AZT_Mini_14Day_Trial" / "state")
     return Path(root) / "trial_lease.json"
 
 
