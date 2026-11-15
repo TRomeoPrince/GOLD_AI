@@ -1,25 +1,33 @@
-# AZT Mini Trial (standalone Windows edition)
+# AZT Mini 14-Day Friends Trial (standalone Windows)
 
-**Status:** experimental feature branch; NOT an approved production build.
+**Release:** Experimental test build. **Never overwrite/deploy the production Owner or Client from this branch.** The fixed-deadline Mini Trial that expires on 17 November 2026 remains on its prior feature branch, unchanged.
 
-- User-selected MT5 terminal and automatically detected account, personal risk settings, local signal engine and personal MT5 order executor. NO customer API, Owner server, hosted workers, ngrok or Telegram is started.
-- Installer: `AZT_Mini_Trial_Setup.exe`, produced by the Windows GitHub Actions workflow `Build AZT Mini Trial (Windows)`; action artifact does not imply Windows end-to-end or live MT5 verification.
-- Trial ends **17 November 2026, 23:59:59 Africa/Kampala** (cutoff 2026-11-17 21:00:00 UTC). Trusted HTTPS Date time is required at startup, periodically while open and immediately before MT5 order submission. Failed verification blocks new orders. No local-PC date can extend the trial.
-- On expiry, the app cooperatively stops its owned workers and launches a separately installed batch helper. That helper waits five seconds and invokes the Inno Setup uninstaller. Only the application installation is removed; local state and broker positions / SL/TP remain. Windows user permissions or an unexpected process lock can prevent automatic removal.
-- Per-user state lives in `%LOCALAPPDATA%\AZT_Mini_Trial\state`. **Never delete its execution journal** to retry ambiguous trades.
-- The existing Owner signal and personal workers are reused. Isolated Mini scope is selected by `AZT_MINI_TRIAL=1`, which has an additional fail-closed order-submission guard. Existing #WORKING Owner and Client commit SHA references remain intact.
-- Python/PyInstaller one-file EXE packages the included strategies; no Python-only packaging can make strategy code completely unrecoverable. The trial is standalone except for internet time verification.
-- This release intentionally keeps strict broker, UTC, news, exposure, stop loss, account and daily risk checks from Owner code. Account lock remains shared with Owner.
-- No local/CI smoke test should send real orders or Telegram messages. Do not distribute an EXE or start automated trading until the Windows build, startup, MT5 probe, risk, order guard and expiry uninstall have been verified with consent.
+## Friend setup and expiry
 
-Build locally on Windows:
+- Download **AZT_Mini_14Day_Trial_Setup.exe** from the private preview release. The bare PyInstaller executable is *not* a complete installer and cannot auto-uninstall; distribute the Setup EXE only.
+- Requires Windows x64, locally installed **MetaTrader 5**, a broker account, and internet access for trusted UTC time checks. No AZT pairing code, customer API, owner-server access, hosted worker, Telegram credentials or subscription is required.
+- Select the MT5 \`terminal64.exe\`, use **Detect MT5**, set local risk, **Save Risk**, and **Start Trading**. Start with a **DEMO** account; neither backtests nor CI validate live results.
+- Each friend gets **14 full days starting from their first successful HTTPS internet-UTC verification**. Downloading/installing the EXE does not begin the 14-day period. Activation and expiry are saved in \`%LOCALAPPDATA%\AZT_Mini_14Day_Trial\state\trial_lease.json\`, which is *intentionally* preserved by uninstall/reinstall. The existing Mini edition uses a different storage directory.
+- Internet UTC is checked at startup, periodically while open, and just before each MT5 order. If verification fails or the period expires, **no new orders** are permitted. No local PC clock can extend the lease. Trading safety and broker checks from the previous Mini code are retained.
+- Installer registers a visible **AZT Mini 14-Day Expiry** per-user Windows scheduled task, checking every **30 minutes**. The check does **not** activate an unstarted trial. After verified expiry, the Mini workers stop and a delayed helper uninstalls only this edition once the EXE has exited. If Windows is off, offline, the user is logged out, the task is blocked, or the GUI remains open, local removal occurs at a later eligible check. The user can uninstall earlier in Windows Settings.
+- The uninstaller **does not remove** MT5, open broker positions, broker SL/TP, your saved configuration or any execution history. The user must monitor open positions independently on expiry. Never delete execution journals to replay uncertain trades.
 
-```powershell
+## Technical trust limitations
+
+This standalone test edition is *not* a cryptographically enforced, tamper-proof license. It uses HTTPS response Date with monotonic in-process caching and a preserved local activation record. A technically capable user who alters or deletes local state can still bypass a client-only trial. A server-issued entitlement would be required for strong license enforcement, but would change the no-pairing-code standalone test design.
+
+## Verification and build
+
+\`\`\`powershell
 py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-build.txt
 .\.venv\Scripts\python.exe -m unittest discover -s tests -p test_mini_trial.py -v
 .\.venv\Scripts\python.exe -m PyInstaller --clean --noconfirm --distpath dist_mini --workpath build/mini_pyi build/AZT_Mini_Trial.spec
-& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "build/AZT_Mini_Trial.iss"
-```
+& "$env:ProgramFiles\Inno Setup 6\ISCC.exe" build\AZT_Mini_Trial.iss
+\`\`\`
 
-**Known limitations:** HTTPS response time is not tamper-proof against a determined user; the trial makes no server licensing calls. Installed state intentionally remains after uninstall for financial safety. This fixed-date trial cannot be extended by reinstalling; offline mode blocks orders.
+On GitHub, run **Build AZT Mini 14-Day Trial (Windows)** from branch \`feature/azt-mini-14day-auto-uninstall-20261116\`. It must pass unit tests, frozen import verification, Inno compilation, Windows Task Scheduler registration, the unactivated task-check test, and an installer/uninstaller smoke test. The compiled private preview release asset is **AZT_Mini_14Day_Trial_Setup.exe**. It is not code-signed. No CI workflow places a real MT5 order or Telegram message.
+
+## Historical Mini proof
+
+The preceding **fixed-date** Mini edition, built on \`feature/azt-mini-trial-20261110\`, passed 8 unit tests, Windows PyInstaller import smoke and a delayed cleanup smoke in GitHub Actions run [42704174921](https://github.com/TRomeoPrince/GOLD_AI/actions/runs/42704174921). That older run does **not** verify the new 14-day build; use the new branch's workflow results.
