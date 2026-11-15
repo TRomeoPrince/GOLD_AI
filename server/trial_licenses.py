@@ -21,8 +21,8 @@ def issue(client_id: int, days: int = 30):
     """Issue once; repeated issuance cannot silently reset the deadline."""
     from . import azt_store
     days = int(days)
-    if days != 30:
-        raise ValueError("Distributor edition is fixed to 30 days.")
+    if days not in (14, 30):
+        raise ValueError("Distributor trials must be 14 or 30 days.")
     with azt_store._db() as con:
         con.execute("BEGIN IMMEDIATE")
         client = azt_store._client_row(con, client_id)
@@ -35,7 +35,7 @@ def issue(client_id: int, days: int = 30):
             raise ValueError("This client has already been issued a distributor trial.")
         con.execute("""INSERT INTO azt_distributor_trials
             (client_id,days,created_utc,activated_utc,expires_utc,revoked_utc,converted_utc)
-            VALUES(?,30,?,'','','','')""", (client_id, _now().isoformat()))
+            VALUES(?,?,?,'','','','')""", (client_id, days, _now().isoformat()))
     return {"client_id": client_id, "state": "PENDING_FIRST_PAIR", "days": days}
 
 
@@ -121,13 +121,14 @@ def status(client_id):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Local owner-only AZT 30-day distributor trial administration")
+    parser = argparse.ArgumentParser(description="Local owner-only AZT 14/30-day distributor trial administration")
     parser.add_argument("action", choices=("issue","revoke","convert","status"))
     parser.add_argument("--client-id", type=int, required=True)
+    parser.add_argument("--days", type=int, choices=(14, 30), default=30, help="New trial duration; default preserves existing 30 days.")
     options = parser.parse_args()
     if options.client_id < 1:
         parser.error("Client ID must be positive.")
-    result = issue(options.client_id) if options.action == "issue" else (
+    result = issue(options.client_id, days=options.days) if options.action == "issue" else (
         status(options.client_id) if options.action == "status" else change(options.client_id, options.action))
     print(result)
 
