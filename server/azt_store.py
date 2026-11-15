@@ -834,8 +834,10 @@ def maintenance_tick():
                     continue
                 displayed_expiry = parse_utc(sub["expires_utc"]).astimezone(ZoneInfo(client["display_timezone"])).isoformat()
                 if distributor_trial:
-                    title = "30-day trial expired" if days == 0 else "30-day trial expiring soon"
-                    body = f"Your distributor trial expires at {displayed_expiry}. Contact Admin to arrange paid access."
+                    trial_row = con.execute("SELECT days FROM azt_distributor_trials WHERE client_id=?", (client["id"],)).fetchone()
+                    duration_days = int(trial_row["days"]) if trial_row else 30
+                    title = f"{duration_days}-day trial expired" if days == 0 else f"{duration_days}-day trial expiring soon"
+                    body = f"Your {duration_days}-day distributor trial expires at {displayed_expiry}. Contact Admin to arrange paid access."
                 else:
                     title = "Subscription expired" if days == 0 else "Subscription expiring soon"
                     body = f"Your {sub['plan_code']} access expires at {displayed_expiry} ({client['display_timezone']}). " + ("New automated entries are blocked until renewal approval." if days == 0 else "Renew to keep automated trading available.")
