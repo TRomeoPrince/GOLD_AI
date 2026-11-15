@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 def configure(home=None):
-    root = Path(home) if home is not None else Path(os.environ.get("LOCALAPPDATA",str(Path.home()))) / "AZT_Mini_Trial"
+    root = Path(home) if home is not None else Path(os.environ.get("LOCALAPPDATA",str(Path.home()))) / "AZT_Mini_14Day_Trial"
     root = root.resolve()
     (root/"state").mkdir(parents=True, exist_ok=True)
     (root/"logs").mkdir(parents=True, exist_ok=True)
