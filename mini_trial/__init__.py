@@ -1,0 +1,1 @@
+"""Standalone local-only AZT Mini trial. No customer API or Owner server."""
