@@ -1,7 +1,11 @@
 @echo off
 setlocal
-REM The helper exits BEFORE the separate delayed uninstaller removes its files.
-REM Owner databases, MT5 terminals and trading records are never deleted.
+REM The helper exits before the separate delayed uninstaller removes its files.
+REM Never kill an MT5 terminal or delete broker/strategy execution history.
 set "AZT_MINI_UNINSTALL=%~dp0unins000.exe"
-start "" /b powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 8; if (Test-Path -LiteralPath $env:AZT_MINI_UNINSTALL) { Start-Process -FilePath $env:AZT_MINI_UNINSTALL -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART') -Wait }"
+set "AZT_MINI_CLIENT=%~dp0AZT_Mini_Trial.exe"
+set "AZT_MINI_HELPER=%~dp0delayed_uninstall.ps1"
+if not exist "%AZT_MINI_UNINSTALL%" exit /b 2
+if not exist "%AZT_MINI_HELPER%" exit /b 2
+start "" /b powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "%AZT_MINI_HELPER%" -Uninstaller "%AZT_MINI_UNINSTALL%" -ClientExe "%AZT_MINI_CLIENT%"
 exit /b 0
