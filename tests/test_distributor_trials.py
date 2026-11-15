@@ -82,7 +82,33 @@ class DistributorTrialsTest(unittest.TestCase):
                 self.assertEqual(azt_store.maintenance_tick()["reminders"], 0)
         self.assertEqual(azt_store.messages(self.client_id)[0]["title"], "30-day trial expired")
 
-    def test_no_naive_or_non30_duration(self):
+
+    def test_friends_fourteen_day_trial_starts_on_first_pair_without_extending(self):
+        trial_licenses.issue(self.client_id, days=14)
+        begun = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+        with store.connect() as con:
+            trial_licenses.activate(con, self.client_id, now=begun)
+            trial_licenses.activate(con, self.client_id, now=begun + timedelta(days=7))
+        row = trial_licenses.status(self.client_id)
+        self.assertEqual(row["days"], 14)
+        self.assertEqual(row["expires_utc"], (begun + timedelta(days=14)).isoformat())
+        with store.connect() as con:
+            before = azt_store._subscription_summary(con, self.client_id, now=begun + timedelta(days=13))
+            after = azt_store._subscription_summary(con, self.client_id, now=begun + timedelta(days=14))
+        self.assertTrue(before["allowed"])
+        self.assertFalse(after["allowed"])
+        self.assertEqual(after["reason"], "DISTRIBUTOR_TRIAL_EXPIRED")
+
+    def test_friends_trial_reminder_uses_fourteen_day_label(self):
+        trial_licenses.issue(self.client_id, days=14)
+        begun = datetime.now(timezone.utc) - timedelta(days=14, seconds=1)
+        with store.connect() as con:
+            trial_licenses.activate(con, self.client_id, now=begun)
+        with patch.object(azt_store, "_telegram"):
+            azt_store.maintenance_tick()
+        self.assertEqual(azt_store.messages(self.client_id)[0]["title"], "14-day trial expired")
+
+    def test_no_naive_or_invalid_duration(self):
         with self.assertRaises(ValueError):
             trial_licenses.issue(self.client_id, 31)
         with self.assertRaises(ValueError):
