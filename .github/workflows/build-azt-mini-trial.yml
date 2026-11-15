@@ -1,8 +1,9 @@
-name: Build AZT Mini Trial (Windows)
+name: Build AZT Mini 14-Day Trial (Windows)
+
 on:
   workflow_dispatch:
   push:
-    branches: [feature/azt-mini-trial-20261110]
+    branches: [feature/azt-mini-14day-auto-uninstall-20261116]
     paths:
       - "mini_trial/**"
       - "build/AZT_Mini_Trial.*"
@@ -10,65 +11,95 @@ on:
       - "broker/mt5_client.py"
       - "tests/test_mini_trial.py"
       - ".github/workflows/build-azt-mini-trial.yml"
+
 jobs:
-  build:
+  mini-14day:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - name: Install dependencies
-        run: |
-          python -m pip install -r requirements-build.txt
-      - name: Offline Mini tests
+        shell: pwsh
+        run: python -m pip install -r requirements-build.txt
+      - name: Unit tests (no live broker/network calls)
+        shell: pwsh
         run: python -m unittest discover -s tests -p "test_mini_trial.py" -v
+      - name: Verify scheduler helper PowerShell syntax
+        shell: pwsh
+        run: |
+          foreach ($file in @('mini_trial/register_expiry_task.ps1', 'mini_trial/delayed_uninstall.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file).Path, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw "PowerShell syntax errors in $file : $($errors -join '; ')" }
+          }
       - name: Build Mini EXE
-        run: python -m PyInstaller --clean --noconfirm --distpath dist_mini --workpath build/mini_pyi build/AZT_Mini_Trial.spec
-      - name: Verify frozen imports without touching broker
+        shell: pwsh
+        run: |
+          python -m PyInstaller --clean --noconfirm --distpath dist_mini --workpath build/mini_pyi build/AZT_Mini_Trial.spec
+          if (-not (Test-Path dist_mini/AZT_Mini_Trial.exe)) { throw 'Mini EXE missing' }
+      - name: Verify frozen imports without starting MT5 or workers
         shell: pwsh
         run: |
           $exe = (Resolve-Path "dist_mini/AZT_Mini_Trial.exe").Path
           $process = Start-Process -FilePath $exe -ArgumentList "--verify-bundle" -Wait -PassThru
-          if ($process.ExitCode -ne 0) { if (Test-Path mini_verify_error.log) { Get-Content mini_verify_error.log }; throw "Frozen Mini import check failed, exit $($process.ExitCode)" }
-      - name: Check EXE exists and record hash
-        shell: pwsh
-        run: |
-          if (!(Test-Path "dist_mini/AZT_Mini_Trial.exe")) { throw "Missing Mini exe" }
-          Get-FileHash "dist_mini/AZT_Mini_Trial.exe" -Algorithm SHA256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AZT-Mini-Trial-EXE
-          path: dist_mini/AZT_Mini_Trial.exe
-          if-no-files-found: error
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path mini_verify_error.log) { Get-Content mini_verify_error.log }
+            throw "Frozen Mini import check failed: $($process.ExitCode)"
+          }
       - name: Install Inno Setup
         shell: pwsh
-        run: choco install innosetup --no-progress -y
-      - name: Package Windows installer
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y }
+          if (-not (Test-Path $iscc)) { throw "Inno compiler missing" }
+      - name: Package 14-day Mini Windows installer
         shell: pwsh
         run: |
-          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
-          & $iscc "build/AZT_Mini_Trial.iss"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-FileHash "dist_mini/AZT_Mini_Trial_Setup.exe" -Algorithm SHA256
-      - name: Smoke-test silent install and external expiry uninstaller
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' 'build/AZT_Mini_Trial.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed: $LASTEXITCODE" }
+          if (-not (Test-Path 'dist_mini/AZT_Mini_14Day_Trial_Setup.exe')) { throw 'Installer missing' }
+          Get-FileHash 'dist_mini/AZT_Mini_14Day_Trial_Setup.exe' -Algorithm SHA256 | Format-List
+      - name: Smoke-test Windows scheduled expiry and safe uninstall
         shell: pwsh
         run: |
-          $target = Join-Path $env:RUNNER_TEMP "AZT-Mini-InstallSmoke"
-          $setup = (Resolve-Path "dist_mini/AZT_Mini_Trial_Setup.exe").Path
-          $proc = Start-Process -FilePath $setup -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOICONS", "/DIR=$target") -PassThru -Wait
+          $target = Join-Path $env:RUNNER_TEMP 'AZT-Mini-14Day-InstallSmoke'
+          $setup = (Resolve-Path 'dist_mini/AZT_Mini_14Day_Trial_Setup.exe').Path
+          $task = 'AZT Mini 14-Day Expiry'
+          $proc = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOICONS',"/DIR=$target") -PassThru -Wait
           if ($proc.ExitCode -ne 0) { throw "Silent Mini install failed: $($proc.ExitCode)" }
-          foreach ($file in @("AZT_Mini_Trial.exe", "expire_uninstall.cmd", "unins000.exe")) {
-            if (!(Test-Path (Join-Path $target $file))) { throw "Missing installed file: $file" }
+          foreach ($file in @('AZT_Mini_Trial.exe','expire_uninstall.cmd','delayed_uninstall.ps1','register_expiry_task.ps1','unins000.exe')) {
+            if (-not (Test-Path (Join-Path $target $file))) { throw "Installed file missing: $file" }
           }
-          & (Join-Path $target "expire_uninstall.cmd")
-          if ($LASTEXITCODE -ne 0) { throw "Expiry helper could not launch" }
-          Start-Sleep -Seconds 18
-          if (Test-Path (Join-Path $target "AZT_Mini_Trial.exe")) { throw "Mini uninstall helper left application installed" }
-          Write-Host "Installer and delayed uninstall helper passed without starting MT5."
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AZT-Mini-Trial-Setup
-          path: dist_mini/AZT_Mini_Trial_Setup.exe
-          if-no-files-found: error
-          retention-days: 30
+          $scheduled = Get-ScheduledTask -TaskName $task -ErrorAction Stop
+          if (-not ($scheduled.Actions | Where-Object { $_.Arguments -eq '--expiry-check' })) { throw 'Expiry task has wrong action' }
+          $exe = Join-Path $target 'AZT_Mini_Trial.exe'
+          $probe = Start-Process -FilePath $exe -ArgumentList '--expiry-check' -PassThru -Wait
+          if ($probe.ExitCode -ne 0) { throw 'Unactivated expiry check failed' }
+          $lease = Join-Path $env:LOCALAPPDATA 'AZT_Mini_14Day_Trial\state\trial_lease.json'
+          if (Test-Path $lease) { throw 'Background expiry task started trial before first use' }
+          & (Join-Path $target 'expire_uninstall.cmd')
+          if ($LASTEXITCODE -ne 0) { throw "Delayed uninstall helper failed to launch" }
+          Start-Sleep -Seconds 20
+          if (Test-Path $exe) { throw 'Trial app not automatically uninstalled' }
+          if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) { throw 'Expiry scheduler not removed by uninstaller' }
+          Write-Host 'Windows install + task registration + unactivated guard + delayed uninstall passed. No MT5 order was submitted.'
+      - name: Publish private GitHub test prerelease
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'azt-mini-14day-trial-preview-20261116'
+          $exe = 'dist_mini\AZT_Mini_14Day_Trial_Setup.exe'
+          $notes = 'TEST BUILD ONLY. Standalone no-pairing-code AZT Mini, 14-day first verified use, periodic internet UTC checks, safe Windows scheduled auto-uninstall. Not tested against live MT5; start on DEMO. Original fixed-date trial and Owner production are not changed.'
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $exe --clobber
+          } else {
+            gh release create $tag $exe --prerelease --title 'AZT Mini - Friends 14-Day Trial (Test)' --notes $notes --target $env:GITHUB_SHA
+          }
+          if ($LASTEXITCODE -ne 0) { throw "GitHub preview release upload failed: $LASTEXITCODE" }
