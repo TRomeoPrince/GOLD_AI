@@ -586,11 +586,19 @@ def set_news_lock(enabled: bool) -> None:
 
 
 def news_lock_enabled() -> bool:
-    with connect() as con:
-        row = con.execute(
-            "SELECT value FROM server_settings WHERE key='news_lock'"
-        ).fetchone()
-    return bool(row and str(row["value"]) == "1")
+    # Listening for signals must not reserve a SQLite writer lock.
+    # A missing or unreadable database is treated as locked.
+    try:
+        con = sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True, timeout=2)
+        try:
+            row = con.execute(
+                "SELECT value FROM server_settings WHERE key='news_lock'"
+            ).fetchone()
+        finally:
+            con.close()
+        return bool(row and str(row[0]) == "1")
+    except sqlite3.Error:
+        return True  # Fail closed if News Lock configuration is unavailable.
 
 
 def entry_block_status():
