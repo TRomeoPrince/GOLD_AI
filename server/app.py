@@ -34,7 +34,7 @@ from .store import (
     effective_risk_policy,
     hosted_account_for_client,
     latest_payment_request,
-    news_lock_enabled,
+    entries_blocked as news_lock_enabled,
     subscription_access,
     subscription_for_client,
     upsert_hosted_account,
