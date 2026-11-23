@@ -1,9 +1,10 @@
 from __future__ import annotations
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 import math
 import pandas as pd
 from strategies import StrategyRegistry
+from strategies.execution_prices import target_at_executable_price
 
 class BacktestEngine:
     def __init__(self,reports_dir:Path,warmup_bars=100,max_hold_bars=60,history_window=250,starting_balance=10000.0,risk_pct=0.9,
@@ -23,12 +24,40 @@ class BacktestEngine:
             raise ValueError("Backtest costs must be finite and non-negative; point_size positive.")
         self.reports_dir.mkdir(parents=True,exist_ok=True)
 
+    def _m15_fill(self, signal, next_bar):
+        # Backtest signal uses only completed candles. The next M5 BID open
+        # is the earliest available quote, never the retest M15 candle close.
+        bid_open = float(next_bar.open)
+        spread = self.spread_points * self.point_size
+        slippage = self.slippage_points * self.point_size
+        entry = (bid_open + spread + slippage if signal.direction == "BUY"
+                 else bid_open - slippage)
+        if not math.isfinite(entry) or entry <= 0:
+            return None
+        # Preserve the execution gateway's original TP/SL stale-signal gate.
+        if signal.direction == "BUY" and not signal.stop_loss < entry < signal.take_profit:
+            return None
+        if signal.direction == "SELL" and not signal.take_profit < entry < signal.stop_loss:
+            return None
+        try:
+            tp = target_at_executable_price(
+                signal.direction, entry, signal.stop_loss,
+                signal.features["reward_r"],
+            )
+        except (ValueError, KeyError, TypeError):
+            return None
+        return replace(signal, entry=entry, take_profit=tp)
+
     def _resolve(self,s,future):
         entry=float(s.entry); sl=float(s.stop_loss); tp=float(s.take_profit); risk=abs(entry-sl)
         if risk<=0:return None
         mfe=mae=0.0
         for held,(_,b) in enumerate(future.iterrows(),1):
             hi=float(b.high); lo=float(b.low)
+            # Historical OHLC is BID: short positions stop/target at ASK.
+            if s.strategy_id=="M15_BREAKOUT" and s.direction=="SELL":
+                hi+=self.spread_points*self.point_size
+                lo+=self.spread_points*self.point_size
             if s.direction=="BUY": mfe=max(mfe,(hi-entry)/risk); mae=max(mae,(entry-lo)/risk); hit_sl=lo<=sl; hit_tp=hi>=tp
             else: mfe=max(mfe,(entry-lo)/risk); mae=max(mae,(hi-entry)/risk); hit_sl=hi>=sl; hit_tp=lo<=tp
             if hit_sl and hit_tp:return "SL",-1.0,held,mfe,mae,"BOTH_TOUCHED_SL_FIRST"
@@ -37,6 +66,8 @@ class BacktestEngine:
             if held>=self.max_hold_bars:break
         if future.empty:return None
         b=future.iloc[min(len(future),self.max_hold_bars)-1]; px=float(b.close)
+        if s.strategy_id=="M15_BREAKOUT" and s.direction=="SELL":
+            px+=self.spread_points*self.point_size
         r=(px-entry)/risk if s.direction=="BUY" else (entry-px)/risk
         return "TIME",r,min(len(future),self.max_hold_bars),mfe,mae,"MAX_HOLD"
 
@@ -52,14 +83,27 @@ class BacktestEngine:
                     continue
                 key=(s.strategy_id,s.direction,s.setup_time)
                 if key in seen:continue
-                seen.add(key); outcome=self._resolve(s,candles.iloc[i:i+1+self.max_hold_bars])
+                seen.add(key)
+                reference_entry=float(s.entry)
+                if s.strategy_id=="M15_BREAKOUT":
+                    s=self._m15_fill(s,candles.iloc[i])
+                    if s is None:continue
+                outcome=self._resolve(s,candles.iloc[i:i+1+self.max_hold_bars])
                 if outcome is None:continue
                 exit_type,gross_r,bars_held,mfe,mae,exit_reason=outcome
                 original_risk=abs(float(s.entry)-float(s.stop_loss))
-                cost_r=((self.spread_points+self.slippage_points)*self.point_size/original_risk
-                        + self.commission_r)
+                if s.strategy_id=="M15_BREAKOUT":
+                    # Spread/slippage are already reflected in fill/ASK exit;
+                    # deducting them again here would double charge.
+                    cost_r=self.commission_r
+                else:
+                    cost_r=((self.spread_points+self.slippage_points)*self.point_size/original_risk
+                            + self.commission_r)
                 r_mult=gross_r-cost_r
                 row=asdict(s); row["features"]=repr(row["features"])
+                if s.strategy_id=="M15_BREAKOUT":
+                    row["signal_reference_entry"]=reference_entry
+                    row["entry_execution_model"]="NEXT_M5_OPEN_BID_ASK"
                 row.update({"exit_type":exit_type,"r_multiple":r_mult,"gross_r":gross_r,
                             "cost_r":cost_r,"bars_held":bars_held,"mfe_r":mfe,
                             "mae_r":mae,"exit_reason":exit_reason})
