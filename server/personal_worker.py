@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import MetaTrader5 as mt5
 from .hosted_executor import execute_instruction
 from .personal_store import load_settings, write_status, next_signal, claim_signal, finish_signal
-from .store import list_clients, list_hosted_accounts, effective_risk_policy, news_lock_enabled
+from .store import list_clients, list_hosted_accounts, effective_risk_policy, entries_blocked as news_lock_enabled
 from config import DEMO_MAX_SIGNAL_AGE_MINUTES
 from .reconnect import TemporaryConnectionError, SafetyStop, RetryState
 
