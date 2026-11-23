@@ -593,6 +593,18 @@ def news_lock_enabled() -> bool:
     return bool(row and str(row["value"]) == "1")
 
 
+def entry_block_status():
+    """Manual toggle OR high-impact USD calendar (fail-closed if unavailable)."""
+    if news_lock_enabled():
+        return True, "MANUAL_NEWS_LOCK"
+    from .usd_news import block_status
+    return block_status()
+
+
+def entries_blocked() -> bool:
+    return entry_block_status()[0]
+
+
 def upsert_hosted_account(client_id: int, mt5_login: int, mt5_server: str, trading_password: str) -> dict:
     mt5_login = int(mt5_login)
     mt5_server = mt5_server.strip()
