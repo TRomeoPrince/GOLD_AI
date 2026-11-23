@@ -8,6 +8,7 @@ import time
 import MetaTrader5 as mt5
 from broker.clock import tick_epoch, tick_utc_epoch
 from broker.symbols import resolve_symbol
+from strategies.execution_prices import target_at_executable_price
 
 MAGIC = 560090
 
@@ -207,6 +208,18 @@ def execute_instruction(
             None,
             "STALE_SIGNAL: current price is outside SL/TP geometry.",
         )
+    if str(payload.get("strategy_id")) == "M15_BREAKOUT":
+        # The signal's retest-close price is a reference, NOT a guaranteed fill.
+        # Keep the structural SL unchanged, size risk from the live quote, and
+        # restore the intended R multiple before broker order_check/order_send.
+        metadata = payload.get("metadata") or {}
+        features = metadata.get("features") if isinstance(metadata, dict) else {}
+        if not isinstance(features, dict) or "reward_r" not in features:
+            return ExecutionResult(False, None, "INVALID_M15_SIGNAL: missing reward_r.")
+        try:
+            tp = target_at_executable_price(direction, price, sl, features["reward_r"])
+        except (ValueError, TypeError) as exc:
+            return ExecutionResult(False, None, f"INVALID_M15_SIGNAL: {exc}")
 
     volume, single_pct = _volume_for_risk(
         direction,
