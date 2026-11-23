@@ -6,9 +6,21 @@ import pandas as pd
 from strategies import StrategyRegistry
 
 class BacktestEngine:
-    def __init__(self,reports_dir:Path,warmup_bars=100,max_hold_bars=60,history_window=250,starting_balance=10000.0,risk_pct=0.9):
+    def __init__(self,reports_dir:Path,warmup_bars=100,max_hold_bars=60,history_window=250,starting_balance=10000.0,risk_pct=0.9,
+                 *,market="GOLD",sr_options=None,strategy_ids=None,
+                 point_size=0.01,spread_points=0.0,slippage_points=0.0,commission_r=0.0):
         self.reports_dir=reports_dir; self.warmup_bars=warmup_bars; self.max_hold_bars=max_hold_bars
         self.history_window=history_window; self.starting_balance=float(starting_balance); self.risk_pct=float(risk_pct)
+        self.market=str(market).upper()
+        self.sr_options=sr_options or {}
+        self.strategy_ids=set(strategy_ids) if strategy_ids is not None else None
+        self.point_size=float(point_size)
+        self.spread_points=float(spread_points)
+        self.slippage_points=float(slippage_points)
+        self.commission_r=float(commission_r)
+        if (self.point_size<=0 or any(not math.isfinite(x) or x<0 for x in
+             (self.spread_points,self.slippage_points,self.commission_r))):
+            raise ValueError("Backtest costs must be finite and non-negative; point_size positive.")
         self.reports_dir.mkdir(parents=True,exist_ok=True)
 
     def _resolve(self,s,future):
@@ -29,18 +41,28 @@ class BacktestEngine:
         return "TIME",r,min(len(future),self.max_hold_bars),mfe,mae,"MAX_HOLD"
 
     def run(self,candles:pd.DataFrame):
-        registry=StrategyRegistry(); rows=[]; seen=set()
+        registry=StrategyRegistry(market=self.market,sr_options=self.sr_options); rows=[]; seen=set()
+        if not registry.models:
+            raise ValueError(f"No strategies registered for market {self.market}.")
         for i in range(self.warmup_bars,len(candles)-2):
             start=max(0,i-self.history_window)
             history=candles.iloc[start:i+1].copy()
             for s in registry.scan(history):
+                if self.strategy_ids is not None and s.strategy_id not in self.strategy_ids:
+                    continue
                 key=(s.strategy_id,s.direction,s.setup_time)
                 if key in seen:continue
                 seen.add(key); outcome=self._resolve(s,candles.iloc[i:i+1+self.max_hold_bars])
                 if outcome is None:continue
-                exit_type,r_mult,bars_held,mfe,mae,exit_reason=outcome
+                exit_type,gross_r,bars_held,mfe,mae,exit_reason=outcome
+                original_risk=abs(float(s.entry)-float(s.stop_loss))
+                cost_r=((self.spread_points+self.slippage_points)*self.point_size/original_risk
+                        + self.commission_r)
+                r_mult=gross_r-cost_r
                 row=asdict(s); row["features"]=repr(row["features"])
-                row.update({"exit_type":exit_type,"r_multiple":r_mult,"bars_held":bars_held,"mfe_r":mfe,"mae_r":mae,"exit_reason":exit_reason})
+                row.update({"exit_type":exit_type,"r_multiple":r_mult,"gross_r":gross_r,
+                            "cost_r":cost_r,"bars_held":bars_held,"mfe_r":mfe,
+                            "mae_r":mae,"exit_reason":exit_reason})
                 rows.append(row)
         trades=pd.DataFrame(rows)
         if not trades.empty: trades=trades.sort_values(["setup_time","strategy_id"]).reset_index(drop=True)
