@@ -408,7 +408,7 @@ def next_account_instruction(client_id, account_id, since):
         return dict(row)
 
 
-def acknowledge_account_instruction(client_id, account_id, instruction_id, status, message):
+def acknowledge_account_instruction(client_id, account_id, instruction_id, status, message, *, return_status=False):
     status = str(status).upper()
     if status not in {"EXECUTED", "REJECTED", "SKIPPED", "ERROR_REVIEW", "TEST_OK", "DUPLICATE"}:
         raise ValueError("Invalid instruction acknowledgment status.")
@@ -421,6 +421,10 @@ def acknowledge_account_instruction(client_id, account_id, instruction_id, statu
             return False
         existing = con.execute("SELECT status,ack_message FROM account_instruction_deliveries WHERE instruction_id=? AND account_id=?", (instruction_id, account_id)).fetchone()
         if existing and existing["status"] not in {"DISPATCHED", "PENDING"}:
+            # A late/conflicting ACK cannot reopen a finalized delivery. The
+            # HTTP API acknowledges its receipt so a client cannot get stuck.
+            if return_status:
+                return "ALREADY_FINAL"
             return existing["status"] == status and existing["ack_message"] == str(message)[:1000]
         if existing:
             changed = con.execute("UPDATE account_instruction_deliveries SET status=?,ack_message=?,acked_utc=? WHERE instruction_id=? AND account_id=? AND status IN ('DISPATCHED','PENDING')", (status, str(message)[:1000], utc_iso(), instruction_id, account_id)).rowcount
@@ -434,7 +438,7 @@ def acknowledge_account_instruction(client_id, account_id, instruction_id, statu
             # Keep the legacy owner's instruction summary without suppressing
             # delivery to a different authorized account of this same client.
             con.execute("UPDATE instructions SET status=?,ack_message=?,acked_utc=? WHERE id=?", (status, str(message)[:1000], utc_iso(), instruction_id))
-        return bool(changed)
+        return ("ACKNOWLEDGED" if changed else "NOT_FOUND") if return_status else bool(changed)
 
 
 def instruction_deliveries(client_id):
