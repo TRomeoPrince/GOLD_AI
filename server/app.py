@@ -35,6 +35,7 @@ from .store import (
     hosted_account_for_client,
     latest_payment_request,
     entries_blocked as news_lock_enabled,
+    entry_block_status,
     subscription_access,
     subscription_for_client,
     upsert_hosted_account,
@@ -123,8 +124,9 @@ def client_status(authorization: str = Header(default="")) -> ClientStatusRespon
 def client_risk_policy(authorization: str = Header(default="")) -> dict:
     client = _client_from_authorization(authorization)
     _trade_context(authorization)
-    if news_lock_enabled():
-        raise HTTPException(status_code=409, detail="NEWS_LOCK: New entries are temporarily blocked.")
+    blocked, reason = entry_block_status()
+    if blocked:
+        raise HTTPException(status_code=409, detail=reason)
     try:
         risk = effective_risk_policy(client)
     except (ValueError, TypeError, sqlite3.Error):
@@ -291,15 +293,17 @@ def get_next_instruction(authorization: str = Header(default=""), since: str = "
         )
 
     context = _trade_context(authorization)
-    if news_lock_enabled():
-        return TradeInstructionResponse(available=False)
+    blocked, reason = entry_block_status()
+    if blocked:
+        return TradeInstructionResponse(available=False, blocked_reason=reason)
     # A client holds one HTTP request open while the owner waits for a signal.
     # Idle waits do read-only SQLite prechecks, not a write transaction.
     deadline = time.monotonic() + wait_seconds
     boundary = max(azt_store.utc_iso(since), context["created_utc"]) if since else context["created_utc"]
     while True:
-        if news_lock_enabled():
-            return TradeInstructionResponse(available=False)
+        blocked, reason = entry_block_status()
+        if blocked:
+            return TradeInstructionResponse(available=False, blocked_reason=reason)
         try:
             row = azt_store.next_account_instruction(client.id, context["account_id"], boundary)
         except ValueError as exc:
