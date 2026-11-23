@@ -25,7 +25,7 @@ from .store import (
     set_hosted_account_status,
     set_hosted_runtime,
     subscription_access,
-    news_lock_enabled,
+    entries_blocked as news_lock_enabled,
 )
 
 
