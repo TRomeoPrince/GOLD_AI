@@ -473,27 +473,38 @@ def next_account_instruction(client_id, account_id, since):
     cutoff = utc_iso(now - timedelta(seconds=DELIVERY_EXPIRY_SECONDS))
     if not _pending_delivery_exists(account_id, client_id, since, cutoff):
         return None
+    expired = []
+    reserved = None
     with _db() as con:
         con.execute("BEGIN IMMEDIATE")
         if not con.execute("SELECT 1 FROM client_mt5_accounts WHERE id=? AND client_id=? AND status='ACTIVE'", (account_id, client_id)).fetchone():
             raise ValueError("MT5 account is not authorized.")
-        _expire_unconfirmed(con, now, account_id=account_id)
-        if con.execute("SELECT 1 FROM account_instruction_deliveries WHERE account_id=? AND status='DISPATCHED' LIMIT 1", (account_id,)).fetchone():
-            return None
-        row = con.execute("""
-            SELECT i.* FROM instructions i
-            LEFT JOIN account_instruction_deliveries d
-                ON d.instruction_id=i.id AND d.account_id=?
-            WHERE i.client_id=? AND i.created_utc>=?
-                AND d.instruction_id IS NULL ORDER BY i.id LIMIT 1
-        """, (account_id, client_id, since)).fetchone()
-        if row is None:
-            return None
-        con.execute("""
-            INSERT INTO account_instruction_deliveries(instruction_id,account_id,status,dispatched_utc)
-            VALUES(?,?,'DISPATCHED',?)
-        """, (row["id"], account_id, utc_iso()))
-        return dict(row)
+        expired = _expire_unconfirmed(con, now, account_id=account_id)
+        held = con.execute("SELECT 1 FROM account_instruction_deliveries WHERE account_id=? AND status='DISPATCHED' LIMIT 1", (account_id,)).fetchone()
+        if not held:
+            row = con.execute("""
+                SELECT i.* FROM instructions i
+                LEFT JOIN account_instruction_deliveries d
+                    ON d.instruction_id=i.id AND d.account_id=?
+                WHERE i.client_id=? AND i.created_utc>=?
+                    AND d.instruction_id IS NULL ORDER BY i.id LIMIT 1
+            """, (account_id, client_id, since)).fetchone()
+            if row is not None:
+                con.execute("""
+                    INSERT INTO account_instruction_deliveries(instruction_id,account_id,status,dispatched_utc)
+                    VALUES(?,?,'DISPATCHED',?)
+                """, (row["id"], account_id, utc_iso()))
+                reserved = dict(row)
+    # Do not call owner Telegram while holding the account's DB write lock.
+    if expired:
+        from .store import DB_PATH
+        for key, body in expired:
+            try:
+                from .telegram_notifications import enqueue_owner_event
+                enqueue_owner_event(key, "AZT • Unconfirmed delivery expired\n" + body, database=DB_PATH)
+            except Exception:
+                pass  # Audit event and in-app alert were committed.
+    return reserved
 
 
 def acknowledge_account_instruction(client_id, account_id, instruction_id, status, message, *, return_status=False):
