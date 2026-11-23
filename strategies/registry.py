@@ -28,7 +28,7 @@ class StrategyRegistry:
     remain unchanged.
     """
 
-    def __init__(self, market: str | None = None, **strategy_kwargs):
+    def __init__(self, market: str | None = None, *, sr_options=None, **strategy_kwargs):
         market_key = (market or "").upper()
 
         shared = [
@@ -39,8 +39,10 @@ class StrategyRegistry:
         ]
 
         if market_key in {"GOLD", "XAUUSD"}:
+            support_options = {"min_stop_atr": 1.5}
+            support_options.update(sr_options or {})
             self.models = [
-                SupportResistanceStrategy(min_stop_atr=1.5),
+                SupportResistanceStrategy(**support_options),
                 *shared,
             ]
         elif market_key in {"US30", "US30.CASH", "US30.STD"}:

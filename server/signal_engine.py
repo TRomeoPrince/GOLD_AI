@@ -13,7 +13,7 @@ from config import ACTIVE_MARKETS, DEMO_MAX_SIGNAL_AGE_MINUTES, DEMO_POLL_SECOND
 from strategies import StrategyRegistry
 
 from .personal_store import publish_signal, write_status
-from .store import active_clients, enqueue_instruction, news_lock_enabled
+from .store import active_clients, enqueue_instruction, entries_blocked as news_lock_enabled
 from .reconnect import RetryState
 
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import MetaTrader5 as mt5
 from .hosted_executor import execute_instruction
 from .personal_store import load_settings, write_status, next_signal, claim_signal, finish_signal
-from .store import list_clients, list_hosted_accounts, effective_risk_policy, news_lock_enabled
+from .store import list_clients, list_hosted_accounts, effective_risk_policy, entries_blocked as news_lock_enabled
 from config import DEMO_MAX_SIGNAL_AGE_MINUTES
 from .reconnect import TemporaryConnectionError, SafetyStop, RetryState
 
@@ -70,6 +70,10 @@ def probe():
         mt5.shutdown()
 
 
+class SkipSignal(ValueError):
+    """Routine signal block; do not mark execution ambiguous."""
+
+
 def execute_signal(row, settings, stop):
     verify_account(settings, stop)
     if news_lock_enabled():
@@ -85,16 +89,16 @@ def execute_signal(row, settings, stop):
     def guard():
         verify_account(settings, stop)
         if news_lock_enabled():
-            raise RuntimeError("News lock enabled before order submission.")
+            raise SkipSignal("High-impact USD News Lock enabled before order submission.")
         latest = effective_risk_policy(SimpleNamespace(**settings, risk_per_trade_enabled=True, max_open_risk_enabled=True, max_daily_loss_enabled=True, daily_profit_target_enabled=False, daily_profit_target_pct=0))
         if any(latest.get(field) != policy.get(field) for field in ("risk_per_trade_pct", "max_open_risk_pct", "max_daily_loss_pct", "daily_profit_target_enabled", "daily_profit_target_pct")):
-            raise SafetyStop("Risk policy changed before order submission; wait for a fresh signal.")
+            raise SkipSignal("Risk policy changed before submission; await fresh signal.")
         # Database reads above can block. Identity/Stop/age must be the final
         # checks, after those reads, immediately before order_send.
         _verify_terminal_identity(settings, stop)
         age_now = (datetime.now(timezone.utc)-setup).total_seconds()
         if age_now < -60 or age_now > DEMO_MAX_SIGNAL_AGE_MINUTES * 60:
-            raise SafetyStop("Signal expired before order submission.")
+            raise SkipSignal("Signal expired before order submission.")
     result = execute_instruction(payload, policy["risk_per_trade_pct"], policy["max_open_risk_pct"], policy["max_daily_loss_pct"], policy["daily_profit_target_enabled"], policy["daily_profit_target_pct"], max_single_risk_pct=2.0, before_send=guard, include_all_positions=True, strict_history=True)
     from .trade_events import SignalOutcome
     return SignalOutcome("EXECUTED" if result.sent else "REJECTED", f"{result.message}; ticket={result.ticket}; risk={result.planned_risk_pct:.3f}%; volume={result.volume}", getattr(result, 'details', {}))
@@ -210,6 +214,8 @@ def run(stop):
                 outcome = execute_signal(row, settings, stop)
                 state, message = outcome
                 details = getattr(outcome, 'details', {})
+            except SkipSignal as exc:
+                state, message = "SKIPPED", str(exc)
             except Exception as exc:
                 # An exception around submission can be ambiguous; never auto retry.
                 state, message = "ERROR_REVIEW", str(exc)

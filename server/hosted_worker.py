@@ -25,8 +25,12 @@ from .store import (
     set_hosted_account_status,
     set_hosted_runtime,
     subscription_access,
-    news_lock_enabled,
+    entries_blocked as news_lock_enabled,
 )
+
+
+class SkipInstruction(ValueError):
+    """Routine hosted signal rejection; no uncertain order is involved."""
 
 
 def utc_now() -> str:
@@ -227,21 +231,25 @@ def run(client_id: int, stop=None) -> None:
                     )
                 else:
                     policy = effective_risk_policy(client)
+                    if news_lock_enabled():
+                        raise SkipInstruction("High-impact USD News Lock blocks new entries.")
                     def guard():
                         verify_hosted_account(hosted)
                         current = client_by_id(client_id)
                         if stop.is_set() or current is None or current.status != "ACTIVE" or current.execution_mode != "HOSTED":
                             raise SafetyStop("Hosted execution stopped before order submission.")
-                        if not subscription_access(client_id)["allowed"] or news_lock_enabled():
-                            raise SafetyStop("Subscription or News Lock blocks new entries.")
+                        if not subscription_access(client_id)["allowed"]:
+                            raise SafetyStop("Subscription blocks new entries.")
+                        if news_lock_enabled():
+                            raise SkipInstruction("High-impact USD News Lock blocks new entries.")
                         latest = effective_risk_policy(current)
                         if any(latest.get(field) != policy.get(field) for field in ("risk_per_trade_pct", "max_open_risk_pct", "max_daily_loss_pct", "daily_profit_target_enabled", "daily_profit_target_pct")):
-                            raise SafetyStop("Risk policy changed before hosted order submission.")
+                            raise SkipInstruction("Risk policy changed before hosted order submission.")
                         if stop.is_set():
                             raise SafetyStop("Hosted execution stopped before order submission.")
                         verify_hosted_account(hosted)
                         if not signal_is_fresh(payload):
-                            raise SafetyStop("Signal expired before order submission.")
+                            raise SkipInstruction("Signal expired before order submission.")
                     result = execute_instruction(
                         payload,
                         policy["risk_per_trade_pct"],
@@ -266,6 +274,9 @@ def run(client_id: int, stop=None) -> None:
                             record_execution(client_id, key, result.ticket, payload, risk_pct=result.planned_risk_pct, trade_details=getattr(result,'details',{}), database=DB_PATH)
                         except Exception as exc:
                             logging.warning("Hosted execution metadata unavailable (%s).", type(exc).__name__)
+            except SkipInstruction as exc:
+                ack_status = "SKIPPED"
+                ack_message = str(exc)
             except Exception as exc:
                 ack_status = "ERROR_REVIEW"
                 ack_message = f"HOSTED_EXECUTION_REVIEW: {exc}"

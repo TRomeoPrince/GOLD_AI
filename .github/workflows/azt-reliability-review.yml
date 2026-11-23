@@ -1,0 +1,26 @@
+name: AZT owner reliability review (no trading)
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "server/**"
+      - "strategies/**"
+      - "backtesting/**"
+      - "tests/**"
+      - ".github/workflows/azt-reliability-review.yml"
+jobs:
+  safe-tests:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install existing build and test dependencies
+        run: python -m pip install -r requirements-build.txt
+      - name: Compile without executing workers
+        run: python -m compileall -q server strategies backtesting tests
+      - name: Run focused reliability tests without placing orders
+        run: python -m unittest discover -s tests -p "test_azt_new_reliability.py" -v
+      - name: Run existing business contract tests
+        run: python -m unittest discover -s tests -p "test_azt_business.py" -v

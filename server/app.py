@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from . import azt_store
 
@@ -33,7 +34,8 @@ from .store import (
     effective_risk_policy,
     hosted_account_for_client,
     latest_payment_request,
-    news_lock_enabled,
+    entries_blocked as news_lock_enabled,
+    entry_block_status,
     subscription_access,
     subscription_for_client,
     upsert_hosted_account,
@@ -122,8 +124,9 @@ def client_status(authorization: str = Header(default="")) -> ClientStatusRespon
 def client_risk_policy(authorization: str = Header(default="")) -> dict:
     client = _client_from_authorization(authorization)
     _trade_context(authorization)
-    if news_lock_enabled():
-        raise HTTPException(status_code=409, detail="NEWS_LOCK: New entries are temporarily blocked.")
+    blocked, reason = entry_block_status()
+    if blocked:
+        raise HTTPException(status_code=409, detail=reason)
     try:
         risk = effective_risk_policy(client)
     except (ValueError, TypeError, sqlite3.Error):
@@ -266,7 +269,7 @@ def _trade_context(authorization):
 
 
 @app.get("/v1/instructions/next", response_model=TradeInstructionResponse)
-def get_next_instruction(authorization: str = Header(default=""), since: str = "") -> TradeInstructionResponse:
+def get_next_instruction(authorization: str = Header(default=""), since: str = "", wait_seconds: float = Query(default=0, ge=0, le=12)) -> TradeInstructionResponse:
     client = _client_from_authorization(authorization)
     if client.status != "ACTIVE":
         raise HTTPException(
@@ -290,17 +293,26 @@ def get_next_instruction(authorization: str = Header(default=""), since: str = "
         )
 
     context = _trade_context(authorization)
-    if news_lock_enabled():
-        return TradeInstructionResponse(available=False)
-    try:
-        # An unmodified old client cannot drain queued pre-session trades. New
-        # clients send a later boundary on every Start/reconnect as well.
-        boundary = max(azt_store.utc_iso(since), context["created_utc"]) if since else context["created_utc"]
-        row = azt_store.next_account_instruction(client.id, context["account_id"], boundary)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    if row is None:
-        return TradeInstructionResponse(available=False)
+    blocked, reason = entry_block_status()
+    if blocked:
+        return TradeInstructionResponse(available=False, blocked_reason=reason)
+    # A client holds one HTTP request open while the owner waits for a signal.
+    # Idle waits do read-only SQLite prechecks, not a write transaction.
+    deadline = time.monotonic() + wait_seconds
+    boundary = max(azt_store.utc_iso(since), context["created_utc"]) if since else context["created_utc"]
+    while True:
+        blocked, reason = entry_block_status()
+        if blocked:
+            return TradeInstructionResponse(available=False, blocked_reason=reason)
+        try:
+            row = azt_store.next_account_instruction(client.id, context["account_id"], boundary)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        if row is not None:
+            break
+        if time.monotonic() >= deadline:
+            return TradeInstructionResponse(available=False)
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
     import json
     return TradeInstructionResponse(
@@ -319,12 +331,12 @@ def ack_instruction(req: TradeAckRequest, authorization: str = Header(default=""
     if not context or not context["account_id"]:
         raise HTTPException(status_code=403, detail="MT5 account is not authorized.")
     try:
-        ok = azt_store.acknowledge_account_instruction(client.id, context["account_id"], req.instruction_id, req.status, req.message)
+        ack_status = azt_store.acknowledge_account_instruction(client.id, context["account_id"], req.instruction_id, req.status, req.message, return_status=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    if not ok:
+    if ack_status == "NOT_FOUND":
         raise HTTPException(status_code=404, detail="Instruction not pending or not found.")
-    if req.status.upper() == "EXECUTED":
+    if ack_status == "ACKNOWLEDGED" and req.status.upper() == "EXECUTED":
         try:
             from . import store, trade_telemetry
             ticket = re.search(r"(?:^|[;|\s])ticket=(\d+)", req.message)
@@ -336,7 +348,7 @@ def ack_instruction(req: TradeAckRequest, authorization: str = Header(default=""
                     trade_telemetry.record_execution(client.id, f"{context['server']}|{context['login']}", ticket[1], json.loads(instruction[0]), risk_pct=float(risk[1]) if risk else None, database=store.DB_PATH)
         except Exception as exc:
             logging.warning("Trade acknowledgment saved but telemetry metadata unavailable (%s).", type(exc).__name__)
-    return {"ok": True}
+    return {"ok": True, "status": ack_status}
 
 
 def _business(function, *args, **kwargs):

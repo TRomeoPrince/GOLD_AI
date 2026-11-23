@@ -12,6 +12,7 @@ import base64
 import json
 import math
 import re
+import sqlite3
 import secrets
 import io
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -384,43 +385,148 @@ def trade_access(token):
     return summary
 
 
-def next_account_instruction(client_id, account_id, since):
-    """Reserve before returning; a lost HTTP response is never re-dispatched.
+DELIVERY_EXPIRY_SECONDS = 20 * 60
 
-    This durable account-scoped reservation protects the same MT5 account even
-    when two separate PCs poll simultaneously. It has no lease or automatic
-    expiry: an ambiguous delivery needs review, never an automatic order retry.
+
+def _expire_unconfirmed(con, now, account_id=None):
+    """Finalize ambiguous deliveries after their signal window; never reoffer them.
+
+    Use both creation and dispatch timestamps to avoid expiring an instruction
+    that was only recently reserved. The broker outcome still needs review.
     """
+    cutoff = utc_iso(now - timedelta(seconds=DELIVERY_EXPIRY_SECONDS))
+    condition = "AND d.account_id=?" if account_id is not None else ""
+    params = (account_id,) if account_id is not None else ()
+    rows = con.execute(f"""
+        SELECT d.instruction_id,d.account_id,i.client_id,i.created_utc,
+               d.dispatched_utc,a.login,a.server,c.archived_utc
+        FROM account_instruction_deliveries d
+        JOIN instructions i ON i.id=d.instruction_id
+        JOIN client_mt5_accounts a ON a.id=d.account_id AND a.client_id=i.client_id
+        JOIN clients c ON c.id=i.client_id
+        WHERE d.status='DISPATCHED' {condition}
+    """, params).fetchall()
+    expired = []
+    for delivery in rows:
+        try:
+            eligible = (parse_utc(delivery["created_utc"]) <= parse_utc(cutoff)
+                        and parse_utc(delivery["dispatched_utc"]) <= parse_utc(cutoff))
+        except (TypeError, ValueError):
+            eligible = False  # Unknown timing: keep held for manual review.
+        if not eligible:
+            continue
+        now_iso = utc_iso(now)
+        changed = con.execute("""
+            UPDATE account_instruction_deliveries
+            SET status='EXPIRED_UNCONFIRMED',
+                ack_message='Unconfirmed after 20 minutes; broker outcome requires review. Never replay.',
+                acked_utc=?
+            WHERE instruction_id=? AND account_id=? AND status='DISPATCHED'
+        """, (now_iso,delivery["instruction_id"],delivery["account_id"])).rowcount
+        if not changed:
+            continue
+        key = f"delivery-expired:{delivery['client_id']}:{delivery['account_id']}:{delivery['instruction_id']}"
+        body = (f"Instruction #{delivery['instruction_id']} for {delivery['server']}|{delivery['login']} "
+                "expired unconfirmed after 20 minutes. It was NOT retried. "
+                "Check broker history for possible execution; newer signals may resume.")
+        _event(con, "EXECUTION_DELIVERY_EXPIRED", body, delivery["client_id"], key)
+        if not delivery["archived_utc"]:
+            _message(con, delivery["client_id"], "Unconfirmed execution expired", body, key)
+        expired.append((key,body))
+    return expired
+
+
+def _pending_delivery_exists(account_id, client_id, since, cutoff):
+    """Read-only hot path: no BEGIN IMMEDIATE for idle client listeners."""
+    from . import store
+    con = sqlite3.connect(store.DB_PATH, timeout=10)
+    con.row_factory = sqlite3.Row
+    try:
+        held = con.execute("""
+            SELECT d.dispatched_utc,i.created_utc
+            FROM account_instruction_deliveries d
+            JOIN instructions i ON i.id=d.instruction_id
+            WHERE d.account_id=? AND d.status='DISPATCHED' LIMIT 1
+        """, (account_id,)).fetchone()
+        if held:
+            try:
+                if (parse_utc(held["created_utc"]) > parse_utc(cutoff)
+                        or parse_utc(held["dispatched_utc"]) > parse_utc(cutoff)):
+                    return False
+            except (TypeError, ValueError):
+                return False
+        return bool(held or con.execute("""
+            SELECT 1 FROM instructions i
+            LEFT JOIN account_instruction_deliveries d
+                ON d.instruction_id=i.id AND d.account_id=?
+            WHERE i.client_id=? AND i.created_utc>=?
+                AND d.instruction_id IS NULL LIMIT 1
+        """, (account_id, client_id, since)).fetchone())
+    finally:
+        con.close()
+
+
+def next_account_instruction(client_id, account_id, since):
+    """Reserve exactly once per account; expire abandoned claims, never replay."""
     since = utc_iso(since)
+    now = utc_now()
+    cutoff = utc_iso(now - timedelta(seconds=DELIVERY_EXPIRY_SECONDS))
+    if not _pending_delivery_exists(account_id, client_id, since, cutoff):
+        return None
+    expired = []
+    reserved = None
     with _db() as con:
         con.execute("BEGIN IMMEDIATE")
         if not con.execute("SELECT 1 FROM client_mt5_accounts WHERE id=? AND client_id=? AND status='ACTIVE'", (account_id, client_id)).fetchone():
             raise ValueError("MT5 account is not authorized.")
-        # Serialize submission for this broker account across separate PCs.
-        # Otherwise different simultaneous signals could both size against the
-        # same pre-entry portfolio snapshot and exceed aggregate risk limits.
-        if con.execute("SELECT 1 FROM account_instruction_deliveries WHERE account_id=? AND status='DISPATCHED' LIMIT 1", (account_id,)).fetchone():
-            return None
-        row = con.execute("SELECT i.* FROM instructions i LEFT JOIN account_instruction_deliveries d ON d.instruction_id=i.id AND d.account_id=? WHERE i.client_id=? AND i.created_utc>=? AND d.instruction_id IS NULL ORDER BY i.id LIMIT 1", (account_id, client_id, since)).fetchone()
-        if row is None:
-            return None
-        con.execute("INSERT INTO account_instruction_deliveries(instruction_id,account_id,status,dispatched_utc) VALUES(?,?,'DISPATCHED',?)", (row["id"], account_id, utc_iso()))
-        return dict(row)
+        expired = _expire_unconfirmed(con, now, account_id=account_id)
+        held = con.execute("SELECT 1 FROM account_instruction_deliveries WHERE account_id=? AND status='DISPATCHED' LIMIT 1", (account_id,)).fetchone()
+        if not held:
+            row = con.execute("""
+                SELECT i.* FROM instructions i
+                LEFT JOIN account_instruction_deliveries d
+                    ON d.instruction_id=i.id AND d.account_id=?
+                WHERE i.client_id=? AND i.created_utc>=?
+                    AND d.instruction_id IS NULL ORDER BY i.id LIMIT 1
+            """, (account_id, client_id, since)).fetchone()
+            if row is not None:
+                con.execute("""
+                    INSERT INTO account_instruction_deliveries(instruction_id,account_id,status,dispatched_utc)
+                    VALUES(?,?,'DISPATCHED',?)
+                """, (row["id"], account_id, utc_iso()))
+                reserved = dict(row)
+    # Do not call owner Telegram while holding the account's DB write lock.
+    if expired:
+        from .store import DB_PATH
+        for key, body in expired:
+            try:
+                from .telegram_notifications import enqueue_owner_event
+                enqueue_owner_event(key, "AZT • Unconfirmed delivery expired\n" + body, database=DB_PATH)
+            except Exception:
+                pass  # Audit event and in-app alert were committed.
+    return reserved
 
 
-def acknowledge_account_instruction(client_id, account_id, instruction_id, status, message):
+def acknowledge_account_instruction(client_id, account_id, instruction_id, status, message, *, return_status=False):
     status = str(status).upper()
     if status not in {"EXECUTED", "REJECTED", "SKIPPED", "ERROR_REVIEW", "TEST_OK", "DUPLICATE"}:
         raise ValueError("Invalid instruction acknowledgment status.")
     with _db() as con:
         con.execute("BEGIN IMMEDIATE")
         if not con.execute("SELECT 1 FROM client_mt5_accounts WHERE id=? AND client_id=? AND status='ACTIVE'", (account_id, client_id)).fetchone():
-            return False
+            return "NOT_FOUND" if return_status else False
         row = con.execute("SELECT * FROM instructions WHERE id=? AND client_id=?", (int(instruction_id), int(client_id))).fetchone()
         if row is None:
-            return False
+            return "NOT_FOUND" if return_status else False
         existing = con.execute("SELECT status,ack_message FROM account_instruction_deliveries WHERE instruction_id=? AND account_id=?", (instruction_id, account_id)).fetchone()
         if existing and existing["status"] not in {"DISPATCHED", "PENDING"}:
+            if existing["status"] == "EXPIRED_UNCONFIRMED" and status == "EXECUTED":
+                key = f"late-execution:{client_id}:{account_id}:{instruction_id}"
+                _event(con, "LATE_EXECUTION_ACK", "Late EXECUTED confirmation after expiration. Reconcile broker history: "+str(message)[:300], client_id, key)
+            # A late/conflicting ACK cannot reopen a finalized delivery. The
+            # HTTP API acknowledges its receipt so a client cannot get stuck.
+            if return_status:
+                return "ALREADY_FINAL"
             return existing["status"] == status and existing["ack_message"] == str(message)[:1000]
         if existing:
             changed = con.execute("UPDATE account_instruction_deliveries SET status=?,ack_message=?,acked_utc=? WHERE instruction_id=? AND account_id=? AND status IN ('DISPATCHED','PENDING')", (status, str(message)[:1000], utc_iso(), instruction_id, account_id)).rowcount
@@ -434,7 +540,7 @@ def acknowledge_account_instruction(client_id, account_id, instruction_id, statu
             # Keep the legacy owner's instruction summary without suppressing
             # delivery to a different authorized account of this same client.
             con.execute("UPDATE instructions SET status=?,ack_message=?,acked_utc=? WHERE id=?", (status, str(message)[:1000], utc_iso(), instruction_id))
-        return bool(changed)
+        return ("ACKNOWLEDGED" if changed else "NOT_FOUND") if return_status else bool(changed)
 
 
 def instruction_deliveries(client_id):
@@ -855,6 +961,9 @@ def maintenance_tick():
             if not delivery["archived_utc"]:
                 _message(con, delivery["client_id"], "Execution needs review", body, key)
             owner_alerts.append((key, f"AZT • Execution needs review\nClient: {delivery['name']}\n{body}"))
+        expired = _expire_unconfirmed(con, now)
+        for key, body in expired:
+            owner_alerts.append((key, "AZT • Unconfirmed delivery expired\\n"+body))
     for client_id, title, body, key in queued:
         _telegram(client_id, title, body, key)
     for key, text in owner_alerts:

@@ -60,9 +60,13 @@ class AZTBusinessTests(unittest.TestCase):
         self.env_patch.start()
         self.telegram_patch = patch.object(business, "_telegram", return_value=False)
         self.telegram_patch.start()
+        # Existing business tests are offline; the calendar has focused tests.
+        self.news_patch = patch("server.usd_news.block_status", return_value=(False, ""))
+        self.news_patch.start()
         self.client, self.code = store.create_client("Test Customer")
 
     def tearDown(self):
+        self.news_patch.stop()
         self.telegram_patch.stop()
         self.env_patch.stop()
         self.db_patch.stop()

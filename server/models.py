@@ -70,6 +70,7 @@ class HostedAccountRequest(BaseModel):
 
 class TradeInstructionResponse(BaseModel):
     available: bool
+    blocked_reason: str = ""
     instruction_id: int = 0
     signal_key: str = ""
     payload: dict = {}
