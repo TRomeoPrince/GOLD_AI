@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import sqlite3
+import time
 from datetime import datetime, timezone
 from . import azt_store
 
@@ -266,7 +267,7 @@ def _trade_context(authorization):
 
 
 @app.get("/v1/instructions/next", response_model=TradeInstructionResponse)
-def get_next_instruction(authorization: str = Header(default=""), since: str = "") -> TradeInstructionResponse:
+def get_next_instruction(authorization: str = Header(default=""), since: str = "", wait_seconds: float = Query(default=0, ge=0, le=12)) -> TradeInstructionResponse:
     client = _client_from_authorization(authorization)
     if client.status != "ACTIVE":
         raise HTTPException(
@@ -292,15 +293,22 @@ def get_next_instruction(authorization: str = Header(default=""), since: str = "
     context = _trade_context(authorization)
     if news_lock_enabled():
         return TradeInstructionResponse(available=False)
-    try:
-        # An unmodified old client cannot drain queued pre-session trades. New
-        # clients send a later boundary on every Start/reconnect as well.
-        boundary = max(azt_store.utc_iso(since), context["created_utc"]) if since else context["created_utc"]
-        row = azt_store.next_account_instruction(client.id, context["account_id"], boundary)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from None
-    if row is None:
-        return TradeInstructionResponse(available=False)
+    # A client holds one HTTP request open while the owner waits for a signal.
+    # Idle waits do read-only SQLite prechecks, not a write transaction.
+    deadline = time.monotonic() + wait_seconds
+    boundary = max(azt_store.utc_iso(since), context["created_utc"]) if since else context["created_utc"]
+    while True:
+        if news_lock_enabled():
+            return TradeInstructionResponse(available=False)
+        try:
+            row = azt_store.next_account_instruction(client.id, context["account_id"], boundary)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        if row is not None:
+            break
+        if time.monotonic() >= deadline:
+            return TradeInstructionResponse(available=False)
+        time.sleep(min(0.5, max(0, deadline - time.monotonic())))
 
     import json
     return TradeInstructionResponse(
