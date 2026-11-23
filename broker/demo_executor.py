@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from math import floor
 from typing import Optional
 
 import MetaTrader5 as mt5
 
 from strategies.base import StrategySignal
+from strategies.execution_prices import target_at_executable_price
 
 
 @dataclass(frozen=True)
@@ -316,6 +317,19 @@ class DemoExecutor:
                 signal.stop_loss, signal.take_profit, None, None,
                 "SKIPPED_STALE: current price is no longer between the strategy SL and TP.",
             )
+        if signal.strategy_id == "M15_BREAKOUT":
+            try:
+                tp = target_at_executable_price(
+                    signal.direction, price, signal.stop_loss,
+                    signal.features["reward_r"],
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                return DemoOrderResult(
+                    False, signal.strategy_id, signal.direction, 0.0, price,
+                    signal.stop_loss, signal.take_profit, None, None,
+                    f"SKIPPED_M15_GEOMETRY: {exc}",
+                )
+            signal = replace(signal, take_profit=tp)
 
         volume, risk_budget, planned_loss = self.volume_for_risk(
             signal.direction, price, signal.stop_loss
