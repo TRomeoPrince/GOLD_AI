@@ -319,12 +319,12 @@ def ack_instruction(req: TradeAckRequest, authorization: str = Header(default=""
     if not context or not context["account_id"]:
         raise HTTPException(status_code=403, detail="MT5 account is not authorized.")
     try:
-        ok = azt_store.acknowledge_account_instruction(client.id, context["account_id"], req.instruction_id, req.status, req.message)
+        ack_status = azt_store.acknowledge_account_instruction(client.id, context["account_id"], req.instruction_id, req.status, req.message, return_status=True)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    if not ok:
+    if ack_status == "NOT_FOUND":
         raise HTTPException(status_code=404, detail="Instruction not pending or not found.")
-    if req.status.upper() == "EXECUTED":
+    if ack_status == "ACKNOWLEDGED" and req.status.upper() == "EXECUTED":
         try:
             from . import store, trade_telemetry
             ticket = re.search(r"(?:^|[;|\s])ticket=(\d+)", req.message)
@@ -336,7 +336,7 @@ def ack_instruction(req: TradeAckRequest, authorization: str = Header(default=""
                     trade_telemetry.record_execution(client.id, f"{context['server']}|{context['login']}", ticket[1], json.loads(instruction[0]), risk_pct=float(risk[1]) if risk else None, database=store.DB_PATH)
         except Exception as exc:
             logging.warning("Trade acknowledgment saved but telemetry metadata unavailable (%s).", type(exc).__name__)
-    return {"ok": True}
+    return {"ok": True, "status": ack_status}
 
 
 def _business(function, *args, **kwargs):
